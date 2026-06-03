@@ -1,0 +1,169 @@
+"""
+core.py — Shared orchestrator wiring.
+
+Holds the singleton services (configurator, session/CSV/playback, layout) and
+the packet-processing tasks that used to live in main.py.  Both the FastAPI
+lifespan (api/app.py) and the route handlers (api/routes.py) import the same
+instances from here, so there is a single source of truth for runtime state.
+
+Lifecycle:
+  await startup()    — boots WS server, UDP receiver, configurator; launches
+                       processing_loop + log_stats; populates the layout via
+                       SET_HOST.  Exposes `queue`, `ws_server`, `udp_protocol`.
+  await shutdown()   — cancels tasks, stops any recording/playback, closes the
+                       configurator socket.
+"""
+
+import asyncio
+import logging
+import socket as _socket
+
+import config
+from transport.super_layout     import SuperSlotLayout
+from transport.udp_receiver     import start_udp_receiver
+from transport.esp_configurator import EspConfigurator
+from transport.ws_server        import WSServer
+from pipeline.torus_position    import TorusPositionStage
+from storage.session_manager    import SessionManager
+from storage.csv_logger         import CSVLogger
+from storage.playback_engine    import PlaybackEngine
+
+log = logging.getLogger("core")
+
+
+def _local_ip() -> str:
+    """Detect the active local IP by opening a dummy UDP connection."""
+    s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+    s.connect(("8.8.8.8", 80))
+    ip = s.getsockname()[0]
+    s.close()
+    return ip
+
+
+# Shared layout — written by EspConfigurator, read by UDPReceiver's parser
+layout = SuperSlotLayout()
+
+# Pipeline stages — executed in order for every received packet.
+# Add a new stage here and create its module under pipeline/.
+PIPELINE_STAGES = [
+    TorusPositionStage(),
+    # CalibrationStage(),   ← iteration 4
+]
+
+session_manager = SessionManager()
+csv_logger      = CSVLogger(session_manager)
+playback_engine = PlaybackEngine(session_manager)
+
+configurator = EspConfigurator(
+    esp_ip      = config.ESP_IP,
+    config_port = config.CONFIG_PORT,
+    local_port  = config.CONFIG_PORT,
+    layout      = layout,
+)
+
+# Runtime handles — populated by startup(), referenced by the API routes.
+queue:        asyncio.Queue | None = None
+ws_server:    WSServer | None      = None
+udp_protocol = None
+_transport   = None
+_tasks: list[asyncio.Task] = []
+
+
+async def processing_loop(q: asyncio.Queue, ws: WSServer) -> None:
+    """
+    Main packet consumer loop.
+
+    For each packet dequeued:
+      1. Write to CSV (raw, before pipeline transforms)
+      2. Run through all pipeline stages (a None result drops the packet)
+      3. Broadcast the enriched packet over WebSocket
+    """
+    log.info("Processing loop started")
+    while True:
+        packet = await q.get()
+
+        if packet.get("typeId") == "playback_end":
+            log.info("Playback session ended — returning to IDLE")
+            q.task_done()
+            continue
+
+        csv_logger.write(packet)
+
+        for stage in PIPELINE_STAGES:
+            if packet is None:
+                break
+            try:
+                packet = await stage.process(packet)
+            except Exception as e:
+                log.error(f"Error in {stage.__class__.__name__}: {e}")
+                packet = None
+
+        if packet is not None:
+            await ws.broadcast(packet)
+
+        q.task_done()
+
+
+async def log_stats(interval: float, q: asyncio.Queue, udp_proto, ws: WSServer) -> None:
+    """Log a periodic status line with queue depth, packet counts, and client count."""
+    while True:
+        await asyncio.sleep(interval)
+        mode = "REC" if csv_logger.active else ("PLAY" if playback_engine.active else "IDLE")
+        log.info(
+            f"[{mode}]  Queue:{q.qsize()}  "
+            f"UDP rx:{udp_proto.stats['rx']} err:{udp_proto.stats['errors']}  "
+            f"WS tx:{ws.stats['tx']} clients:{len(ws.clients)}"
+        )
+
+
+def current_mode() -> str:
+    """Return the orchestrator mode: REC, PLAY, or IDLE."""
+    if csv_logger.active:
+        return "REC"
+    if playback_engine.active:
+        return "PLAY"
+    return "IDLE"
+
+
+async def startup() -> None:
+    """Boot all subsystems and launch the background tasks."""
+    global queue, ws_server, udp_protocol, _transport
+
+    queue = asyncio.Queue()
+
+    ws_server = WSServer(config.WS_HOST, config.WS_PORT)
+    await ws_server.start()
+
+    _transport, udp_protocol = await start_udp_receiver(
+        config.UDP_HOST, config.UDP_PORT, queue, layout
+    )
+
+    configurator.start()
+    my_ip = _local_ip()
+    log.info(f"Local IP: {my_ip}")
+    # SET_HOST also populates the layout via the ACK, so super packets are
+    # decoded into named fields immediately after this call returns.
+    await asyncio.to_thread(configurator.set_host, my_ip)
+
+    _tasks.append(asyncio.ensure_future(processing_loop(queue, ws_server)))
+    _tasks.append(asyncio.ensure_future(log_stats(10.0, queue, udp_protocol, ws_server)))
+
+    log.info("Orchestrator ready")
+
+
+async def shutdown() -> None:
+    """Tear down all subsystems cleanly."""
+    if csv_logger.active:
+        csv_logger.stop()
+    if playback_engine.active:
+        playback_engine.stop()
+
+    for task in _tasks:
+        task.cancel()
+    _tasks.clear()
+
+    if _transport is not None:
+        _transport.close()
+
+    configurator.stop()
+    log.info("Orchestrator shut down")

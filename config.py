@@ -7,6 +7,9 @@ UDP_PORT = 4210          # ESP32 sends sensor data here
 WS_HOST  = "0.0.0.0"
 WS_PORT  = 8081          # downstream clients (Three.js, Ableton…) connect here
 
+API_HOST = "0.0.0.0"
+API_PORT = 8000          # FastAPI control panel + REST API
+
 ESP_IP      = "10.89.55.66"   # ESP32 IP address on the local network
 CONFIG_PORT = 4211             # config port: PC → ESP commands and ACK replies
 
