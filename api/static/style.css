@@ -125,3 +125,58 @@ button.danger { background: var(--bad); }
   font-family: ui-monospace, monospace;
   font-size: 12px;
 }
+
+.mono { font-family: ui-monospace, monospace; }
+
+/* ── Données live ─────────────────────────────────────────────────────────── */
+.card h3 { margin: 0 0 6px; font-size: 13px; color: var(--muted); font-weight: 600; }
+
+.live-grid {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr;
+  gap: 12px;
+}
+.live-grid > div { min-width: 0; }
+
+#live-rates { width: 100%; border-collapse: collapse; font-size: 12px; }
+#live-rates td { padding: 2px 6px; border-bottom: 1px solid var(--border); }
+#live-rates td.num { text-align: right; font-family: ui-monospace, monospace; color: var(--accent); }
+
+#live-values { margin: 0; max-height: 220px; overflow: auto; }
+
+/* ── Lignes de slot / préset ──────────────────────────────────────────────── */
+.slot-list { display: flex; flex-direction: column; gap: 4px; }
+
+.slot-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 3px 0;
+}
+.slot-name { min-width: 130px; font-size: 13px; }
+.slot-name.wide { min-width: 220px; font-family: ui-monospace, monospace; font-size: 12px; }
+.hz-input { width: 64px; }
+
+.add-super { margin-top: 8px; }
+
+.preset-list { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+
+/* ── Barre de progression playback ────────────────────────────────────────── */
+.progress {
+  height: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 10px 0 6px;
+}
+.progress-bar {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  transition: width .25s linear;
+}
+
+.speed-preset { padding: 4px 8px; background: var(--border); }
+.speed-preset:hover { background: var(--accent); }

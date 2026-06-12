@@ -85,6 +85,11 @@ class EspConfigurator:
         self._layout      = layout
         self._sock: socket.socket | None = None
 
+        # Last ACK-parsed state {simples, supers, host}, or None until the first
+        # ACK arrives. The ESP config only changes via our own commands (each
+        # returns an ACK), so this cache is authoritative — no polling needed.
+        self.state: dict | None = None
+
     def start(self) -> None:
         """Open and bind the UDP socket."""
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -230,6 +235,9 @@ class EspConfigurator:
         # Propagate to the shared layout so the UDP receiver decodes named fields
         if self._layout is not None:
             self._layout.update(state)
+
+        # Cache as the last-known ESP state (exposed in the panel snapshot).
+        self.state = state
 
         self._log_state(state)
         return state

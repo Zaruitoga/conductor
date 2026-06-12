@@ -62,18 +62,29 @@ class PlaybackEngine:
         self._task: asyncio.Task | None = None
         self.active = False
 
+        # Progress, exposed via GET /api/playback/status.
+        self.session:   str | None = None
+        self.speed:     float      = 1.0
+        self.loop:      bool       = False
+        self.index:     int        = 0     # current row (1-based once playing)
+        self.total:     int        = 0     # total rows in the session
+        self.elapsed_s: float      = 0.0   # session time reached
+        self.total_s:   float      = 0.0   # session duration
+
     async def start(
         self,
         session_name:    str,
         queue:           asyncio.Queue,
         pipeline_stages: list,
         speed:           float = 1.0,
+        loop:            bool  = False,
     ) -> None:
         """
         Start replaying a session in the background.
 
         Resets all pipeline stages before the first packet is pushed so that
         integrators and other stateful stages start from a clean state.
+        With loop=True the session restarts (and stages reset) on each pass.
         """
         if self.active:
             log.warning("Playback already active — call stop() first")
@@ -86,15 +97,22 @@ class PlaybackEngine:
             log.error(f"Session not found: {csv_path}")
             return
 
-        for stage in pipeline_stages:
-            await stage.reset()
-        log.info(f"Pipeline reset for '{session_name}'")
+        self.session   = session_name
+        self.speed     = speed
+        self.loop      = loop
+        self.index     = 0
+        self.total     = 0
+        self.elapsed_s = 0.0
+        self.total_s   = 0.0
 
         self.active = True
         self._task  = asyncio.ensure_future(
-            self._replay_loop(csv_path, queue, speed)
+            self._replay_loop(csv_path, queue, pipeline_stages, speed, loop)
         )
-        log.info(f"Playback started — session '{session_name}' (×{speed})")
+        log.info(
+            f"Playback started — session '{session_name}' (×{speed}"
+            f"{', loop' if loop else ''})"
+        )
 
     def stop(self) -> None:
         """Cancel the replay task."""
@@ -105,9 +123,11 @@ class PlaybackEngine:
 
     async def _replay_loop(
         self,
-        csv_path: str,
-        queue:    asyncio.Queue,
-        speed:    float,
+        csv_path:        str,
+        queue:           asyncio.Queue,
+        pipeline_stages: list,
+        speed:           float,
+        loop:            bool,
     ) -> None:
         """Read all CSV rows and push them onto the queue with original timing."""
         try:
@@ -118,25 +138,38 @@ class PlaybackEngine:
                 log.warning("CSV is empty")
                 return
 
-            t0_csv  = int(rows[0]["ts_esp_us"])
-            t0_real = asyncio.get_event_loop().time()
-            log.info(f"Replaying {len(rows)} packets…")
+            t0_csv       = int(rows[0]["ts_esp_us"])
+            self.total   = len(rows)
+            self.total_s = (int(rows[-1]["ts_esp_us"]) - t0_csv) / 1e6
 
-            for row in rows:
-                if not self.active:
+            while self.active:
+                for stage in pipeline_stages:
+                    await stage.reset()
+                self.index     = 0
+                self.elapsed_s = 0.0
+                t0_real        = asyncio.get_event_loop().time()
+                log.info(f"Replaying {len(rows)} packets…")
+
+                for i, row in enumerate(rows, start=1):
+                    if not self.active:
+                        break
+
+                    elapsed_csv_s = (int(row["ts_esp_us"]) - t0_csv) / 1e6
+                    target_real   = t0_real + elapsed_csv_s / speed
+                    wait          = target_real - asyncio.get_event_loop().time()
+                    if wait > 0:
+                        await asyncio.sleep(wait)
+
+                    self.index     = i
+                    self.elapsed_s = elapsed_csv_s
+
+                    packet = self._row_to_packet(row)
+                    if packet is not None:
+                        await queue.put(packet)
+
+                log.info("Replay finished")
+                if not loop:
                     break
-
-                elapsed_csv_s = (int(row["ts_esp_us"]) - t0_csv) / 1e6
-                target_real   = t0_real + elapsed_csv_s / speed
-                wait          = target_real - asyncio.get_event_loop().time()
-                if wait > 0:
-                    await asyncio.sleep(wait)
-
-                packet = self._row_to_packet(row)
-                if packet is not None:
-                    await queue.put(packet)
-
-            log.info("Replay finished")
 
         except asyncio.CancelledError:
             log.info("Replay cancelled")

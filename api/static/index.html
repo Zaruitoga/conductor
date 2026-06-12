@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="fr">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Conductor — Control Panel</title>
+  <title>Conductor — Panneau de contrôle</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -19,49 +19,67 @@
   </header>
 
   <main>
-    <!-- Module 1: ESP32 connection / state -->
+    <!-- Données live -->
     <section class="card">
-      <h2>ESP32 — État &amp; connexion</h2>
-      <button id="esp-refresh">Rafraîchir l'état</button>
-      <div id="esp-state" class="state-box muted">Non chargé.</div>
+      <h2>Données live</h2>
+      <div class="live-grid">
+        <div>
+          <h3>Débit par type</h3>
+          <table id="live-rates"><tbody></tbody></table>
+        </div>
+        <div>
+          <h3>Dernières valeurs</h3>
+          <div id="live-values" class="state-box">—</div>
+        </div>
+      </div>
     </section>
 
-    <!-- Module 2: ESP32 control -->
-    <section class="card">
-      <h2>ESP32 — Contrôle</h2>
+    <!-- ESP32 : état + contrôle -->
+    <section class="card" id="esp-card">
+      <h2>ESP32 — État &amp; contrôle</h2>
+      <div class="row">
+        <span id="esp-conn" class="muted">…</span>
+      </div>
 
       <fieldset>
         <legend>Host (destination des données)</legend>
-        <label>IP <input id="host-ip" type="text" placeholder="auto-détecté si vide"></label>
-        <button id="host-set">SET_HOST</button>
+        <div class="row">
+          <span>actuel : <b id="esp-host" class="mono">?</b></span>
+        </div>
+        <div class="row">
+          <label>IP <input id="host-ip" type="text" placeholder="auto-détecté si vide"></label>
+          <button id="host-set">SET_HOST</button>
+        </div>
       </fieldset>
 
       <fieldset>
-        <legend>Slot simple</legend>
-        <label>Slot
-          <select id="simple-slot"></select>
-        </label>
-        <label>État
-          <select id="simple-enabled">
-            <option value="true">on</option>
-            <option value="false">off</option>
-          </select>
-        </label>
-        <label>Hz <input id="simple-hz" type="number" value="50" min="1" step="1"></label>
-        <button id="simple-set">SET_SIMPLE</button>
+        <legend>Slots simples</legend>
+        <div id="simple-rows" class="slot-list"><span class="muted">Non chargé.</span></div>
       </fieldset>
 
       <fieldset>
-        <legend>Super slot</legend>
-        <label>Slot <input id="super-slot" type="number" value="0" min="0" max="7"></label>
-        <label>Deps (séparés par virgule) <input id="super-deps" type="text" value="0,6"></label>
-        <label>Skip <input id="super-skip" type="number" value="1" min="1"></label>
-        <button id="super-set">SET_SUPER</button>
-        <button id="super-del" class="danger">DEL_SUPER</button>
+        <legend>Super-slots</legend>
+        <div id="super-rows" class="slot-list"><span class="muted">Non chargé.</span></div>
+        <div class="row add-super">
+          <span>Ajouter :</span>
+          <label>slot <input id="super-slot" type="number" value="0" min="0" max="7"></label>
+          <label>deps <input id="super-deps" type="text" value="0,6"></label>
+          <label>skip <input id="super-skip" type="number" value="1" min="1"></label>
+          <button id="super-add">SET_SUPER</button>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Présets de configuration (locaux au navigateur)</legend>
+        <div class="row">
+          <input id="preset-name" type="text" placeholder="nom du préset">
+          <button id="preset-save">Sauvegarder l'état courant</button>
+        </div>
+        <div id="preset-list" class="preset-list"></div>
       </fieldset>
     </section>
 
-    <!-- Module 3: CSV recording -->
+    <!-- Enregistrement CSV -->
     <section class="card">
       <h2>Enregistrement CSV</h2>
       <div id="rec-status" class="state-box muted">…</div>
@@ -70,17 +88,28 @@
       <button id="rec-marker">Marqueur sync</button>
     </section>
 
-    <!-- Module 4: Playback -->
+    <!-- Playback -->
     <section class="card">
       <h2>Playback</h2>
       <div class="row">
         <select id="session-select"></select>
         <button id="session-refresh">↻</button>
       </div>
-      <label>Vitesse <input id="playback-speed" type="number" value="1" min="0.1" step="0.1"></label>
-      <button id="playback-start">Lire</button>
-      <button id="playback-stop" class="danger">Stop</button>
-      <div id="playback-status" class="state-box muted">…</div>
+      <div id="session-meta" class="muted"></div>
+      <div class="row">
+        <span>Vitesse</span>
+        <button class="speed-preset" data-speed="0.5">0.5×</button>
+        <button class="speed-preset" data-speed="1">1×</button>
+        <button class="speed-preset" data-speed="2">2×</button>
+        <input id="playback-speed" type="number" value="1" min="0.1" step="0.1">
+        <label><input id="playback-loop" type="checkbox"> Boucle</label>
+      </div>
+      <div class="row">
+        <button id="playback-start">Lire</button>
+        <button id="playback-stop" class="danger">Stop</button>
+      </div>
+      <div class="progress"><div id="playback-bar" class="progress-bar"></div></div>
+      <div id="playback-status" class="muted">Inactif.</div>
     </section>
   </main>
 

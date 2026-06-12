@@ -9,43 +9,42 @@ the old keyboard interface's run_in_executor).
 import asyncio
 import time
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
 import core
 from api.models import HostConfig, SimpleSlotConfig, SuperSlotConfig, PlaybackRequest
 
 router = APIRouter(prefix="/api")
 
+# Cadence of the panel observation push (seconds).
+_WS_PUSH_INTERVAL = 0.25
 
-# ── Status / ESP state ────────────────────────────────────────────────────
+
+# ── Observation: WS push (primary) + REST polling (fallback) ────────────────
+# Both share the snapshot builders in core.py, so there is one source of truth.
+
+@router.websocket("/ws")
+async def panel_ws(ws: WebSocket) -> None:
+    """Push the merged panel snapshot (~4 Hz) to one control-panel client."""
+    await ws.accept()
+    try:
+        while True:
+            await ws.send_json(core.panel_snapshot())
+            await asyncio.sleep(_WS_PUSH_INTERVAL)
+    except WebSocketDisconnect:
+        pass
+
 
 @router.get("/status")
 async def get_status() -> dict:
-    """Overall orchestrator status — drives the frontend's connection banner."""
-    udp = core.udp_protocol
-    ws  = core.ws_server
-    return {
-        "mode":        core.current_mode(),
-        "queue_depth": core.queue.qsize() if core.queue else 0,
-        "udp": {
-            "rx":          udp.stats["rx"]     if udp else 0,
-            "errors":      udp.stats["errors"] if udp else 0,
-            "last_esp_ip": udp.last_esp_ip     if udp else None,
-        },
-        "ws": {
-            "tx":      ws.stats["tx"]   if ws else 0,
-            "clients": len(ws.clients) if ws else 0,
-        },
-    }
+    """Orchestrator status (REST fallback for the WS push)."""
+    return core.status_dict()
 
 
-@router.get("/esp/state")
-async def get_esp_state() -> dict:
-    """Full ESP config (simples, supers, host). reachable=False on ACK timeout."""
-    state = await asyncio.to_thread(core.configurator.get_state)
-    if state is None:
-        return {"reachable": False}
-    return {"reachable": True, **state}
+@router.get("/live")
+async def get_live() -> dict:
+    """Live stream metrics (REST fallback for the WS push)."""
+    return core.monitor.snapshot()
 
 
 # ── ESP control ───────────────────────────────────────────────────────────
@@ -122,20 +121,31 @@ async def recording_marker() -> dict:
 
 @router.get("/recording/status")
 async def recording_status() -> dict:
-    logger = core.csv_logger
-    meta = logger._meta
-    return {
-        "active":       logger.active,
-        "session":      meta.name if meta else None,
-        "packet_count": meta.packet_count if meta else 0,
-    }
+    """Recording state (REST fallback for the WS push)."""
+    return core.recording_dict()
 
 
 # ── Playback ──────────────────────────────────────────────────────────────
 
 @router.get("/sessions")
 async def list_sessions() -> dict:
-    return {"sessions": core.session_manager.list_sessions()}
+    """Sessions with metadata (date, duration, packet count, sync marker)."""
+    sm = core.session_manager
+    out = []
+    for name in sm.list_sessions():
+        info = {"name": name}
+        try:
+            meta = sm.load_meta(sm.session_path(name))
+            info.update(
+                started_at=meta.started_at,
+                packet_count=meta.packet_count,
+                duration_s=round((meta.last_ts_rx_us - meta.first_ts_rx_us) / 1e6, 1),
+                has_marker=meta.sync_marker_ts_us > 0,
+            )
+        except Exception:
+            pass  # older/missing session.json — fall back to bare name
+        out.append(info)
+    return {"sessions": out}
 
 
 @router.post("/playback/start")
@@ -147,9 +157,9 @@ async def playback_start(req: PlaybackRequest) -> dict:
     if req.name not in core.session_manager.list_sessions():
         raise HTTPException(404, f"Session not found: {req.name}")
     await core.playback_engine.start(
-        req.name, core.queue, core.PIPELINE_STAGES, req.speed
+        req.name, core.queue, core.PIPELINE_STAGES, req.speed, req.loop
     )
-    return {"active": True, "session": req.name, "speed": req.speed}
+    return {"active": True, "session": req.name, "speed": req.speed, "loop": req.loop}
 
 
 @router.post("/playback/stop")
@@ -162,4 +172,5 @@ async def playback_stop() -> dict:
 
 @router.get("/playback/status")
 async def playback_status() -> dict:
-    return {"active": core.playback_engine.active}
+    """Playback state with progress (REST fallback for the WS push)."""
+    return core.playback_dict()

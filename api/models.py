@@ -26,3 +26,4 @@ class PlaybackRequest(BaseModel):
     """Playback start body."""
     name: str
     speed: float = 1.0
+    loop: bool = False

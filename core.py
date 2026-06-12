@@ -23,6 +23,7 @@ from transport.super_layout     import SuperSlotLayout
 from transport.udp_receiver     import start_udp_receiver
 from transport.esp_configurator import EspConfigurator
 from transport.ws_server        import WSServer
+from transport.live_monitor     import LiveMonitor
 from pipeline.torus_position    import TorusPositionStage
 from storage.session_manager    import SessionManager
 from storage.csv_logger         import CSVLogger
@@ -54,6 +55,9 @@ session_manager = SessionManager()
 csv_logger      = CSVLogger(session_manager)
 playback_engine = PlaybackEngine(session_manager)
 
+# Observes the packet stream (rates, latest values, liveness) for GET /api/live.
+monitor = LiveMonitor()
+
 configurator = EspConfigurator(
     esp_ip      = config.ESP_IP,
     config_port = config.CONFIG_PORT,
@@ -74,9 +78,9 @@ async def processing_loop(q: asyncio.Queue, ws: WSServer) -> None:
     Main packet consumer loop.
 
     For each packet dequeued:
-      1. Write to CSV (raw, before pipeline transforms)
+      1. Observe it (live metrics) and write to CSV (raw, before pipeline)
       2. Run through all pipeline stages (a None result drops the packet)
-      3. Broadcast the enriched packet over WebSocket
+      3. Observe computed output, then broadcast the enriched packet over WS
     """
     log.info("Processing loop started")
     while True:
@@ -87,6 +91,7 @@ async def processing_loop(q: asyncio.Queue, ws: WSServer) -> None:
             q.task_done()
             continue
 
+        monitor.observe(packet)
         csv_logger.write(packet)
 
         for stage in PIPELINE_STAGES:
@@ -99,6 +104,8 @@ async def processing_loop(q: asyncio.Queue, ws: WSServer) -> None:
                 packet = None
 
         if packet is not None:
+            if "px" in packet:           # computed torus-position output
+                monitor.observe(packet)
             await ws.broadcast(packet)
 
         q.task_done()
@@ -123,6 +130,64 @@ def current_mode() -> str:
     if playback_engine.active:
         return "PLAY"
     return "IDLE"
+
+
+# ── Snapshot builders — single source of truth for the panel state ───────────
+# Shared by the REST observation endpoints (fallback) and the WS push channel.
+
+def status_dict() -> dict:
+    """Orchestrator status: mode, queue depth, UDP/WS counters."""
+    return {
+        "mode":        current_mode(),
+        "queue_depth": queue.qsize() if queue else 0,
+        "udp": {
+            "rx":          udp_protocol.stats["rx"]     if udp_protocol else 0,
+            "errors":      udp_protocol.stats["errors"] if udp_protocol else 0,
+            "last_esp_ip": udp_protocol.last_esp_ip     if udp_protocol else None,
+        },
+        "ws": {
+            "tx":      ws_server.stats["tx"]   if ws_server else 0,
+            "clients": len(ws_server.clients) if ws_server else 0,
+        },
+    }
+
+
+def recording_dict() -> dict:
+    """Current recording state."""
+    meta = csv_logger._meta
+    return {
+        "active":       csv_logger.active,
+        "session":      meta.name if meta else None,
+        "packet_count": meta.packet_count if meta else 0,
+    }
+
+
+def playback_dict() -> dict:
+    """Current playback state with progress."""
+    pb = playback_engine
+    percent = round(100 * pb.index / pb.total, 1) if pb.total else 0.0
+    return {
+        "active":    pb.active,
+        "session":   pb.session,
+        "index":     pb.index,
+        "total":     pb.total,
+        "percent":   percent,
+        "elapsed_s": round(pb.elapsed_s, 1),
+        "total_s":   round(pb.total_s, 1),
+        "speed":     pb.speed,
+        "loop":      pb.loop,
+    }
+
+
+def panel_snapshot() -> dict:
+    """Full observation snapshot pushed to the control panel over WS."""
+    return {
+        "status":    status_dict(),
+        "live":      monitor.snapshot(),
+        "recording": recording_dict(),
+        "playback":  playback_dict(),
+        "esp":       configurator.state,
+    }
 
 
 async def startup() -> None:
