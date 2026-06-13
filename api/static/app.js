@@ -62,6 +62,18 @@ function renderStatus(s) {
   $("status-detail").textContent =
     `rx:${s.udp.rx} err:${s.udp.errors} esp:${s.udp.last_esp_ip || "?"} ` +
     `queue:${s.queue_depth} ws:${s.ws.clients}`;
+
+  const e = s.esp_net;
+  if (e) {
+    const el = $("esp-detect");
+    if (e.resolved) {
+      el.textContent = `${e.hostname} → ${e.ip}`;
+    } else if (s.udp.last_esp_ip) {
+      el.textContent = `${e.hostname} non résolu — données reçues de ${s.udp.last_esp_ip}`;
+    } else {
+      el.textContent = `${e.hostname} — non détecté`;
+    }
+  }
 }
 
 function renderLive(live) {

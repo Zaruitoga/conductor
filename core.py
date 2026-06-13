@@ -59,7 +59,7 @@ playback_engine = PlaybackEngine(session_manager)
 monitor = LiveMonitor()
 
 configurator = EspConfigurator(
-    esp_ip      = config.ESP_IP,
+    esp_host    = config.ESP_HOST,
     config_port = config.CONFIG_PORT,
     local_port  = config.CONFIG_PORT,
     layout      = layout,
@@ -115,6 +115,19 @@ async def log_stats(interval: float, q: asyncio.Queue, udp_proto, ws: WSServer) 
     """Log a periodic status line with queue depth, packet counts, and client count."""
     while True:
         await asyncio.sleep(interval)
+
+        # Self-heal the ESP target from the data plane: the source IP of incoming
+        # sensor packets is the ESP's real address. Adopt it whenever it differs
+        # from our current target (mDNS miss, stale resolve, or a mid-séance DHCP
+        # change), and SET_HOST once if we never reached the ESP — that ACK also
+        # populates the super-slot layout so named decoding kicks in.
+        rx_ip = udp_proto.last_esp_ip
+        if rx_ip and rx_ip != configurator.esp_ip:
+            never_acked = configurator.state is None
+            configurator.esp_ip = rx_ip
+            if never_acked:
+                await asyncio.to_thread(configurator.set_host, _local_ip())
+
         mode = "REC" if csv_logger.active else ("PLAY" if playback_engine.active else "IDLE")
         log.info(
             f"[{mode}]  Queue:{q.qsize()}  "
@@ -148,6 +161,11 @@ def status_dict() -> dict:
         "ws": {
             "tx":      ws_server.stats["tx"]   if ws_server else 0,
             "clients": len(ws_server.clients) if ws_server else 0,
+        },
+        "esp_net": {
+            "hostname": configurator.hostname,
+            "ip":       configurator.esp_ip,
+            "resolved": configurator.resolved,
         },
     }
 
@@ -214,9 +232,18 @@ async def startup() -> None:
     configurator.start()
     my_ip = _local_ip()
     log.info(f"Local IP: {my_ip}")
-    # SET_HOST also populates the layout via the ACK, so super packets are
-    # decoded into named fields immediately after this call returns.
-    await asyncio.to_thread(configurator.set_host, my_ip)
+    # Resolve the ESP's mDNS hostname (imu-cyrwheel.local) to its current IP
+    # instead of relying on a hardcoded address. On failure we don't SET_HOST —
+    # log_stats will adopt the ESP's address from incoming packets instead.
+    if await asyncio.to_thread(configurator.resolve):
+        # SET_HOST also populates the layout via the ACK, so super packets are
+        # decoded into named fields immediately after this call returns.
+        await asyncio.to_thread(configurator.set_host, my_ip)
+    else:
+        log.warning(
+            f"ESP not reachable at {config.ESP_HOST} — skipping SET_HOST; "
+            "will adopt its address from incoming sensor data."
+        )
 
     _tasks.append(asyncio.ensure_future(processing_loop(queue, ws_server)))
     _tasks.append(asyncio.ensure_future(log_stats(30.0, queue, udp_protocol, ws_server)))

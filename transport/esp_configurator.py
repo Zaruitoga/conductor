@@ -53,6 +53,15 @@ SLOT_NAME = [
 ]
 
 
+def _is_ipv4(s: str) -> bool:
+    """True if `s` is already a dotted-quad IPv4 literal (no resolution needed)."""
+    try:
+        socket.inet_aton(s)
+        return s.count(".") == 3
+    except OSError:
+        return False
+
+
 class EspConfigurator:
     """
     UDP configuration client for the ESP32.
@@ -61,10 +70,14 @@ class EspConfigurator:
     automatically after every ACK so that the UDP receiver can decode
     super-slot packets into named fields without delay.
 
+    The ESP is addressed by hostname (`esp_host`, typically the mDNS name
+    "imu-cyrwheel.local") rather than a fixed IP; call resolve() to look it up.
+
     Typical usage:
         layout = SuperSlotLayout()
-        cfg = EspConfigurator("10.89.55.66", 4211, 4211, layout=layout)
+        cfg = EspConfigurator("imu-cyrwheel.local", 4211, 4211, layout=layout)
         cfg.start()
+        cfg.resolve()                  # mDNS hostname → IP (cached as send target)
         state = cfg.get_state()        # also populates layout
         cfg.set_simple(slot=0, enabled=True, rate_us=20_000)
         cfg.stop()
@@ -72,13 +85,15 @@ class EspConfigurator:
 
     def __init__(
         self,
-        esp_ip:      str,
+        esp_host:    str,
         config_port: int,
         local_port:  int,
         timeout:     float = 2.0,
         layout:      SuperSlotLayout | None = None,
     ):
-        self._esp_ip      = esp_ip
+        self._esp_host    = esp_host        # mDNS hostname or literal IP from config
+        self._esp_ip      = esp_host        # send target; == host until resolve() runs
+        self._resolved    = _is_ipv4(esp_host)  # a literal IP needs no resolution
         self._config_port = config_port
         self._local_port  = local_port
         self._timeout     = timeout
@@ -96,7 +111,7 @@ class EspConfigurator:
         self._sock.bind(("", self._local_port))
         self._sock.settimeout(self._timeout)
         log.info(
-            f"Configurator ready → {self._esp_ip}:{self._config_port} "
+            f"Configurator ready → {self._esp_host}:{self._config_port} "
             f"(local port {self._local_port})"
         )
 
@@ -107,13 +122,53 @@ class EspConfigurator:
             self._sock = None
 
     @property
+    def hostname(self) -> str:
+        """The configured ESP host (mDNS name or literal IP)."""
+        return self._esp_host
+
+    @property
     def esp_ip(self) -> str:
+        """The address commands are currently sent to (resolved IP, or the host)."""
         return self._esp_ip
 
     @esp_ip.setter
     def esp_ip(self, ip: str) -> None:
-        self._esp_ip = ip
-        log.info(f"ESP IP updated → {ip}")
+        if ip != self._esp_ip:
+            log.info(f"ESP target updated → {ip}")
+        self._esp_ip   = ip
+        self._resolved = True
+
+    @property
+    def resolved(self) -> bool:
+        """True once the host maps to a concrete IP (via resolve or the data plane)."""
+        return self._resolved
+
+    def resolve(self) -> str | None:
+        """
+        Resolve the configured ESP hostname to an IPv4 address and cache it as
+        the send target.  On macOS, `.local` names go through Bonjour/mDNS.
+
+        Returns the IP on success, or None on failure (the host string is left
+        as the target, so a literal IP keeps working and the data-plane fallback
+        in core.log_stats can still adopt the address from incoming packets).
+
+        Blocking (the OS resolver can stall a few seconds on a miss); call via
+        asyncio.to_thread from the event loop.
+        """
+        try:
+            info = socket.getaddrinfo(
+                self._esp_host, self._config_port,
+                family=socket.AF_INET, type=socket.SOCK_DGRAM,
+            )
+            ip = info[0][4][0]
+        except socket.gaierror as e:
+            log.warning(f"Could not resolve ESP host {self._esp_host!r}: {e}")
+            return None
+        if ip != self._esp_ip:
+            log.info(f"Resolved {self._esp_host} → {ip}")
+        self._esp_ip   = ip
+        self._resolved = True
+        return ip
 
     def set_host(self, ip: str) -> dict | None:
         """Tell the ESP which IP address to send sensor data to."""

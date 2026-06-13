@@ -10,7 +10,10 @@ WS_PORT  = 8081          # downstream clients (Three.js, Ableton…) connect her
 API_HOST = "0.0.0.0"
 API_PORT = 8000          # FastAPI control panel + REST API
 
-ESP_IP      = "10.196.103.66"   # ESP32 IP address on the local network
+# The ESP32 advertises this mDNS hostname; it is resolved to an IP at startup
+# (EspConfigurator.resolve), so the ESP's DHCP address no longer needs to be
+# hardcoded. A literal IPv4 here (e.g. "10.0.0.42") is used as-is, bypassing mDNS.
+ESP_HOST    = "imu-cyrwheel.local"
 CONFIG_PORT = 4211             # config port: PC → ESP commands and ACK replies
 
 # Torus geometry
