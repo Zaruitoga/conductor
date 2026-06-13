@@ -29,7 +29,7 @@ mode) are not stored — a debug warning is emitted by the parser.
 import csv
 import logging
 
-from storage.session_manager import SessionManager, SessionMeta
+from storage.session_manager import SessionManager, TakeMeta
 from transport.super_layout import ALL_SUPER_NAMED_FIELDS
 
 log = logging.getLogger("csv_logger")
@@ -64,25 +64,25 @@ PAYLOAD_FIELDS: dict[int, tuple[str, ...]] = {
 
 
 class CSVLogger:
-    """Writes one CSV row per packet to the active session file."""
+    """Writes one CSV row per packet to the active take's file."""
 
     def __init__(self, session_manager: SessionManager):
-        self._sm          = session_manager
-        self._file        = None
-        self._writer      = None
-        self._session_dir: str | None        = None
-        self._meta:        SessionMeta | None = None
-        self.active        = False
+        self._sm       = session_manager
+        self._file     = None
+        self._writer   = None
+        self._take_dir: str | None      = None
+        self._meta:     TakeMeta | None = None
+        self.active     = False
 
-    def start(self, session_dir: str, meta: SessionMeta) -> None:
-        """Open the CSV file and write the header row."""
+    def start(self, take_dir: str, meta: TakeMeta) -> None:
+        """Open the take's CSV file and write the header row."""
         if self.active:
             log.warning("Logger already active — call stop() first")
             return
 
-        self._session_dir = session_dir
-        self._meta        = meta
-        csv_path          = self._sm.csv_path(session_dir)
+        self._take_dir = take_dir
+        self._meta     = meta
+        csv_path       = self._sm.csv_path(take_dir)
 
         self._file   = open(csv_path, "w", newline="")
         self._writer = csv.DictWriter(
@@ -93,7 +93,7 @@ class CSVLogger:
         log.info(f"Recording started → {csv_path}")
 
     def stop(self) -> None:
-        """Flush, close the file, and finalise session metadata."""
+        """Flush, close the file, and finalise take metadata."""
         if not self.active:
             return
         self.active = False
@@ -101,10 +101,10 @@ class CSVLogger:
         self._file.close()
         self._file   = None
         self._writer = None
-        self._sm.close_session(self._session_dir, self._meta)
+        self._sm.close_take(self._take_dir, self._meta)
         log.info(
             f"Recording stopped — {self._meta.packet_count} packets "
-            f"in {self._session_dir}"
+            f"in {self._take_dir}"
         )
 
     def write(self, packet: dict) -> None:
@@ -149,9 +149,9 @@ class CSVLogger:
         m.last_ts_rx_us = packet["ts_rx_us"]
 
     def mark_sync(self, ts_rx_us: int) -> None:
-        """Record a video sync marker (clap) timestamp in the session sidecar."""
+        """Record a video sync marker (clap) timestamp in the take sidecar."""
         if not self.active:
             log.warning("Sync marker ignored: no active recording")
             return
-        self._sm.set_sync_marker(self._session_dir, self._meta, ts_rx_us)
+        self._sm.set_sync_marker(self._take_dir, self._meta, ts_rx_us)
         log.info(f"Sync marker recorded at ts_rx_us={ts_rx_us}")

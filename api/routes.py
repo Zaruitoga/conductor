@@ -7,12 +7,16 @@ the old keyboard interface's run_in_executor).
 """
 
 import asyncio
+import os
 import time
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
 import core
-from api.models import HostConfig, SimpleSlotConfig, SuperSlotConfig, PlaybackRequest
+from api.models import (
+    HostConfig, SimpleSlotConfig, SuperSlotConfig,
+    SessionCreate, SessionUpdate, TakeStart, TakeUpdate, PlaybackRequest,
+)
 
 router = APIRouter(prefix="/api")
 
@@ -45,6 +49,12 @@ async def get_status() -> dict:
 async def get_live() -> dict:
     """Live stream metrics (REST fallback for the WS push)."""
     return core.monitor.snapshot()
+
+
+@router.get("/session")
+async def get_session() -> dict:
+    """Active session meta (REST fallback for the WS push)."""
+    return {"session": core.session_dict()}
 
 
 # ── ESP control ───────────────────────────────────────────────────────────
@@ -89,17 +99,62 @@ async def del_super(slot: int) -> dict:
     return {"state": ack}
 
 
-# ── Recording ─────────────────────────────────────────────────────────────
+# ── Session lifecycle ─────────────────────────────────────────────────────
+
+@router.post("/session/start")
+async def session_start(req: SessionCreate) -> dict:
+    if core.session_manager.active_session() is not None:
+        raise HTTPException(409, "A session is already open — close it first")
+    meta = core.session_manager.create_session(
+        title=req.title,
+        location=req.location,
+        equipment=req.equipment,
+        comments=req.comments,
+        firmware_version=req.firmware_version,
+    )
+    return {"session": core.session_dict()} if meta else {"session": None}
+
+
+@router.patch("/session")
+async def session_update(req: SessionUpdate) -> dict:
+    try:
+        core.session_manager.update_session(req.model_dump(exclude_none=True))
+    except RuntimeError:
+        raise HTTPException(409, "No active session")
+    return {"session": core.session_dict()}
+
+
+@router.post("/session/close")
+async def session_close() -> dict:
+    if core.csv_logger.active:
+        raise HTTPException(409, "Stop the recording before closing the session")
+    try:
+        meta = core.session_manager.close_session()
+    except RuntimeError:
+        raise HTTPException(409, "No active session")
+    return {"closed": meta.name}
+
+
+# ── Recording (takes) ─────────────────────────────────────────────────────
 
 @router.post("/recording/start")
-async def recording_start() -> dict:
+async def recording_start(req: TakeStart) -> dict:
     if core.csv_logger.active:
         raise HTTPException(409, "Recording already active")
     if core.playback_engine.active:
         raise HTTPException(409, "Cannot record during playback")
-    session_dir, meta = core.session_manager.new_session()
-    core.csv_logger.start(session_dir, meta)
-    return {"active": True, "session": meta.name}
+    try:
+        take_dir, meta = core.session_manager.new_take(
+            title=req.title,
+            performer=req.performer,
+            figures=req.figures,
+            notes=req.notes,
+            imu_config=core.configurator.state,
+        )
+    except RuntimeError:
+        raise HTTPException(409, "No active session — open one first")
+    core.csv_logger.start(take_dir, meta)
+    return {"active": True, "take": meta.name}
 
 
 @router.post("/recording/stop")
@@ -125,28 +180,29 @@ async def recording_status() -> dict:
     return core.recording_dict()
 
 
-# ── Playback ──────────────────────────────────────────────────────────────
+# ── Sessions browser / take editing ───────────────────────────────────────
 
 @router.get("/sessions")
 async def list_sessions() -> dict:
-    """Sessions with metadata (date, duration, packet count, sync marker)."""
-    sm = core.session_manager
-    out = []
-    for name in sm.list_sessions():
-        info = {"name": name}
-        try:
-            meta = sm.load_meta(sm.session_path(name))
-            info.update(
-                started_at=meta.started_at,
-                packet_count=meta.packet_count,
-                duration_s=round((meta.last_ts_rx_us - meta.first_ts_rx_us) / 1e6, 1),
-                has_marker=meta.sync_marker_ts_us > 0,
-            )
-        except Exception:
-            pass  # older/missing session.json — fall back to bare name
-        out.append(info)
-    return {"sessions": out}
+    """Full tree: every session's metadata with its takes' metadata."""
+    return {"sessions": core.session_manager.list_sessions()}
 
+
+@router.patch("/sessions/{session}/takes/{take}")
+async def update_take(session: str, take: str, req: TakeUpdate) -> dict:
+    rec = core.csv_logger
+    if rec.active and rec._meta and rec._meta.name == take:
+        raise HTTPException(409, "Take is being recorded — stop it first")
+    try:
+        meta = core.session_manager.update_take(
+            session, take, req.model_dump(exclude_none=True)
+        )
+    except FileNotFoundError:
+        raise HTTPException(404, f"Take not found: {session}/{take}")
+    return {"take": meta.name}
+
+
+# ── Playback ──────────────────────────────────────────────────────────────
 
 @router.post("/playback/start")
 async def playback_start(req: PlaybackRequest) -> dict:
@@ -154,12 +210,14 @@ async def playback_start(req: PlaybackRequest) -> dict:
         raise HTTPException(409, "Stop recording before starting playback")
     if core.playback_engine.active:
         raise HTTPException(409, "Playback already active")
-    if req.name not in core.session_manager.list_sessions():
-        raise HTTPException(404, f"Session not found: {req.name}")
+    sm = core.session_manager
+    if not os.path.exists(sm.csv_path(sm.take_path(req.session, req.take))):
+        raise HTTPException(404, f"Take not found: {req.session}/{req.take}")
     await core.playback_engine.start(
-        req.name, core.queue, core.PIPELINE_STAGES, req.speed, req.loop
+        req.session, req.take, core.queue, core.PIPELINE_STAGES, req.speed, req.loop
     )
-    return {"active": True, "session": req.name, "speed": req.speed, "loop": req.loop}
+    return {"active": True, "session": req.session, "take": req.take,
+            "speed": req.speed, "loop": req.loop}
 
 
 @router.post("/playback/stop")

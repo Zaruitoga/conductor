@@ -89,7 +89,7 @@ legend { color: var(--muted); font-size: 12px; padding: 0 4px; }
 
 label { display: inline-flex; align-items: center; gap: 6px; margin: 4px 8px 4px 0; }
 
-input, select {
+input, select, textarea {
   background: var(--bg);
   color: var(--text);
   border: 1px solid var(--border);
@@ -99,6 +99,13 @@ input, select {
 }
 input[type="number"] { width: 70px; }
 input[type="text"]   { width: 150px; }
+
+textarea { width: 100%; resize: vertical; }
+
+label.block {
+  display: block;
+  margin: 6px 0;
+}
 
 button {
   background: var(--accent);

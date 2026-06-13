@@ -64,40 +64,43 @@ class PlaybackEngine:
 
         # Progress, exposed via GET /api/playback/status.
         self.session:   str | None = None
+        self.take:      str | None = None
         self.speed:     float      = 1.0
         self.loop:      bool       = False
         self.index:     int        = 0     # current row (1-based once playing)
-        self.total:     int        = 0     # total rows in the session
-        self.elapsed_s: float      = 0.0   # session time reached
-        self.total_s:   float      = 0.0   # session duration
+        self.total:     int        = 0     # total rows in the take
+        self.elapsed_s: float      = 0.0   # take time reached
+        self.total_s:   float      = 0.0   # take duration
 
     async def start(
         self,
-        session_name:    str,
+        session:         str,
+        take:            str,
         queue:           asyncio.Queue,
         pipeline_stages: list,
         speed:           float = 1.0,
         loop:            bool  = False,
     ) -> None:
         """
-        Start replaying a session in the background.
+        Start replaying a take in the background.
 
         Resets all pipeline stages before the first packet is pushed so that
         integrators and other stateful stages start from a clean state.
-        With loop=True the session restarts (and stages reset) on each pass.
+        With loop=True the take restarts (and stages reset) on each pass.
         """
         if self.active:
             log.warning("Playback already active — call stop() first")
             return
 
-        session_dir = self._sm.session_path(session_name)
-        csv_path    = self._sm.csv_path(session_dir)
+        take_dir = self._sm.take_path(session, take)
+        csv_path = self._sm.csv_path(take_dir)
 
         if not os.path.exists(csv_path):
-            log.error(f"Session not found: {csv_path}")
+            log.error(f"Take not found: {csv_path}")
             return
 
-        self.session   = session_name
+        self.session   = session
+        self.take      = take
         self.speed     = speed
         self.loop      = loop
         self.index     = 0
@@ -110,7 +113,7 @@ class PlaybackEngine:
             self._replay_loop(csv_path, queue, pipeline_stages, speed, loop)
         )
         log.info(
-            f"Playback started — session '{session_name}' (×{speed}"
+            f"Playback started — {session}/{take} (×{speed}"
             f"{', loop' if loop else ''})"
         )
 

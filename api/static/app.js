@@ -1,9 +1,9 @@
 "use strict";
 
 // ── View-only frontend ──────────────────────────────────────────────────────
-// Observation (status/live/recording/playback/esp) is pushed by the backend
-// over a WebSocket (/api/ws, ~4 Hz) and merely rendered here. Commands stay
-// REST. If the socket drops, we fall back to REST polling until it reconnects.
+// Observation (status/live/session/recording/playback/esp) is pushed by the
+// backend over a WebSocket (/api/ws, ~4 Hz) and merely rendered here. Commands
+// stay REST. If the socket drops, we fall back to REST polling.
 
 const SLOT_NAMES = [
   "GYRO", "ACCEL", "MAG", "LINEAR_ACCEL",
@@ -12,6 +12,11 @@ const SLOT_NAMES = [
 
 const $ = (id) => document.getElementById(id);
 const fmt = (v) => (typeof v === "number" ? v.toFixed(3) : v);
+
+const takeDuration = (t) =>
+  t.last_ts_rx_us > t.first_ts_rx_us
+    ? ((t.last_ts_rx_us - t.first_ts_rx_us) / 1e6).toFixed(1)
+    : "0.0";
 
 // ── HTTP helper (commands + fallback polling) ───────────────────────────────
 async function api(method, path, body) {
@@ -49,7 +54,7 @@ function action(fn) {
   };
 }
 
-// ── Render functions (pure: take a snapshot slice, update the DOM) ───────────
+// ── Render: status / live ───────────────────────────────────────────────────
 function renderStatus(s) {
   if (!s) return;
   $("mode-badge").textContent = s.mode;
@@ -72,7 +77,6 @@ function renderLive(live) {
       live.age_ms == null ? "En attente de données" : "Silence";
   }
 
-  // Débit par type
   const tb = $("live-rates").tBodies[0];
   tb.innerHTML = "";
   const rates = Object.entries(live.rates || {});
@@ -89,7 +93,6 @@ function renderLive(live) {
     }
   }
 
-  // Dernières valeurs
   const lines = [];
   if (live.battery_pct != null) lines.push(`batterie : ${live.battery_pct}%`);
   if (live.torus) {
@@ -103,10 +106,89 @@ function renderLive(live) {
   $("live-values").textContent = lines.length ? lines.join("\n") : "—";
 }
 
+// ── Render: session / takes ─────────────────────────────────────────────────
+// Rebuilt only when the pushed session tree actually changes; the comments
+// textarea is (re)filled only when the session identity changes, so the 4 Hz
+// push never clobbers text being typed.
+let lastSessionJson = null;
+let lastSessionName = null;
+
+function renderSession(sess) {
+  const json = JSON.stringify(sess ?? null);
+  if (json === lastSessionJson) return;
+  lastSessionJson = json;
+
+  const active = !!sess;
+  $("session-form").hidden = active;
+  $("session-active").hidden = !active;
+  $("take-no-session").hidden = active;
+  $("take-controls").hidden = !active;
+
+  if (!active) {
+    lastSessionName = null;
+    return;
+  }
+
+  const eq = Object.entries(sess.equipment || {})
+    .filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join(" · ");
+  $("sess-header").textContent = [
+    `${sess.title || sess.name}  (${sess.name})`,
+    `lieu : ${sess.location || "—"}`,
+    `matériel : ${eq || "—"}`,
+    `firmware : ${sess.firmware_version || "?"} · programme : ${sess.program_version || "?"}`,
+    `début : ${sess.started_at}`,
+  ].join("\n");
+
+  if (sess.name !== lastSessionName) {
+    lastSessionName = sess.name;
+    $("sess-comments-edit").value = sess.comments || "";
+  }
+
+  renderTakesList(sess.name, sess.takes || []);
+}
+
+function renderTakesList(sessionName, takes) {
+  const box = $("takes-list");
+  box.innerHTML = "";
+  if (!takes.length) {
+    box.innerHTML = '<span class="muted">Aucun take.</span>';
+    return;
+  }
+  for (const t of takes) {
+    const row = document.createElement("div");
+    row.className = "slot-row";
+
+    const label = document.createElement("span");
+    label.className = "slot-name wide";
+    const extras = [
+      t.performer && `perf: ${t.performer}`,
+      t.figures && t.figures.length && `figures: ${t.figures.join(",")}`,
+      t.sync_marker_ts_us > 0 && "marqueur ✓",
+    ].filter(Boolean).join(" · ");
+    label.textContent =
+      `${t.name} — ${takeDuration(t)}s · ${t.packet_count} paq.` +
+      (extras ? ` · ${extras}` : "");
+    label.title = t.notes || "";
+
+    const edit = document.createElement("button");
+    edit.textContent = "✎ notes";
+    edit.onclick = () => {
+      const notes = prompt(`Notes du take ${t.name} :`, t.notes || "");
+      if (notes === null) return;
+      action(() => api("PATCH",
+        `/api/sessions/${encodeURIComponent(sessionName)}/takes/${encodeURIComponent(t.name)}`,
+        { notes }))();
+    };
+
+    row.append(label, edit);
+    box.append(row);
+  }
+}
+
 function renderRecording(s) {
   if (!s) return;
   $("rec-status").textContent = s.active
-    ? `● REC  ${s.session}  (${s.packet_count} paquets)`
+    ? `● REC  ${s.take}  (${s.packet_count} paquets)`
     : "Inactif.";
 }
 
@@ -114,15 +196,11 @@ function renderPlayback(s) {
   if (!s) return;
   $("playback-bar").style.width = (s.active ? s.percent : 0) + "%";
   $("playback-status").textContent = s.active
-    ? `▶ ${s.session} — ${s.elapsed_s}/${s.total_s}s (${s.percent}%)${s.loop ? " ⟳" : ""} ×${s.speed}`
+    ? `▶ ${s.session}/${s.take} — ${s.elapsed_s}/${s.total_s}s (${s.percent}%)${s.loop ? " ⟳" : ""} ×${s.speed}`
     : "Inactif.";
 }
 
-// ── ESP32 état + contrôle (poussé dans le snapshot, dérivé des ACK) ──────────
-// The ESP config only changes via our own commands, each of which ACKs the
-// full state — so the backend caches it and pushes it here. We rebuild the
-// widgets ONLY when the state actually changes, so a 4 Hz push never clobbers
-// a value the user is typing into an Hz/deps field.
+// ── Render: ESP état + contrôle (poussé dans le snapshot, dérivé des ACK) ───
 let lastEspJson = null;
 
 function renderEspState(esp) {
@@ -215,7 +293,6 @@ const loadPresets = () => {
 };
 const savePresets = (p) => localStorage.setItem(PRESETS_KEY, JSON.stringify(p));
 
-// Built from the last ESP state pushed over the WS.
 function currentEspState() {
   try { return JSON.parse(lastEspJson); } catch { return null; }
 }
@@ -254,7 +331,7 @@ async function applyPreset(name, btn) {
     for (const s of preset.supers) {
       await api("POST", "/api/esp/super", { slot: s.slot, deps: s.deps, skip: s.skip });
     }
-    toast("Préset appliqué", "ok");   // ESP widgets refresh on the next WS push
+    toast("Préset appliqué", "ok");
   } catch (e) {
     toast(e.message, "bad");
   } finally {
@@ -289,23 +366,20 @@ function renderPresets() {
   }
 }
 
-// ── Sessions (REST, on demand) ──────────────────────────────────────────────
-let sessionMeta = {};
+// ── Playback browser (GET /api/sessions tree, on demand) ────────────────────
+let sessionTree = [];
 
 async function refreshSessions() {
   try {
     const { sessions } = await api("GET", "/api/sessions");
-    sessionMeta = {};
-    const sel = $("session-select");
+    sessionTree = sessions;
+    const sel = $("playback-session");
     const prev = sel.value;
     sel.innerHTML = "";
     for (const s of sessions) {
-      sessionMeta[s.name] = s;
       const o = document.createElement("option");
       o.value = s.name;
-      o.textContent = s.duration_s != null
-        ? `${s.name} — ${s.duration_s}s, ${s.packet_count} paq.${s.has_marker ? " ✓" : ""}`
-        : s.name;
+      o.textContent = `${s.title || s.name} (${s.takes.length} takes)`;
       sel.appendChild(o);
     }
     if (sessions.some((s) => s.name === prev)) sel.value = prev;
@@ -315,19 +389,50 @@ async function refreshSessions() {
       o.disabled = true;
       sel.appendChild(o);
     }
-    updateSessionMeta();
+    populateTakeSelect();
   } catch { /* ignore */ }
 }
 
-function updateSessionMeta() {
-  const m = sessionMeta[$("session-select").value];
-  $("session-meta").textContent = (m && m.started_at)
-    ? `Démarrée ${m.started_at} · ${m.duration_s}s · ${m.packet_count} paquets${m.has_marker ? " · marqueur ✓" : ""}`
-    : "";
+function populateTakeSelect() {
+  const session = sessionTree.find((s) => s.name === $("playback-session").value);
+  const sel = $("playback-take");
+  const prev = sel.value;
+  sel.innerHTML = "";
+  const takes = session ? session.takes : [];
+  for (const t of takes) {
+    const o = document.createElement("option");
+    o.value = t.name;
+    o.textContent = `${t.name} — ${takeDuration(t)}s, ${t.packet_count} paq.`;
+    sel.appendChild(o);
+  }
+  if (takes.some((t) => t.name === prev)) sel.value = prev;
+  if (!takes.length) {
+    const o = document.createElement("option");
+    o.textContent = "(aucun take)";
+    o.disabled = true;
+    sel.appendChild(o);
+  }
+  updateTakeMeta();
+}
+
+function updateTakeMeta() {
+  const session = sessionTree.find((s) => s.name === $("playback-session").value);
+  const t = session && session.takes.find((x) => x.name === $("playback-take").value);
+  if (!t) { $("take-meta").textContent = ""; return; }
+  const parts = [
+    t.title,
+    t.performer && `perf: ${t.performer}`,
+    t.figures && t.figures.length && `figures: ${t.figures.join(",")}`,
+    `${takeDuration(t)}s · ${t.packet_count} paquets`,
+    t.sync_marker_ts_us > 0 && "marqueur ✓",
+    t.notes,
+  ].filter(Boolean);
+  $("take-meta").textContent = parts.join(" · ");
 }
 
 // ── REST polling fallback (only while the WS is down) ───────────────────────
 async function pollStatus()    { try { renderStatus(await api("GET", "/api/status")); } catch { /**/ } }
+async function pollSession()   { try { renderSession((await api("GET", "/api/session")).session); } catch { /**/ } }
 async function pollRecording() { try { renderRecording(await api("GET", "/api/recording/status")); } catch { /**/ } }
 async function pollPlayback()  { try { renderPlayback(await api("GET", "/api/playback/status")); } catch { /**/ } }
 async function pollLive() {
@@ -341,9 +446,9 @@ async function pollLive() {
 let fallbackTimers = [];
 function startFallback() {
   if (fallbackTimers.length) return;
-  pollStatus(); pollLive(); pollRecording(); pollPlayback();
+  pollStatus(); pollLive(); pollSession(); pollRecording(); pollPlayback();
   fallbackTimers.push(setInterval(() => { pollLive(); pollPlayback(); }, 400));
-  fallbackTimers.push(setInterval(() => { pollStatus(); pollRecording(); }, 1000));
+  fallbackTimers.push(setInterval(() => { pollStatus(); pollSession(); pollRecording(); }, 1000));
 }
 function stopFallback() {
   fallbackTimers.forEach(clearInterval);
@@ -361,24 +466,25 @@ function connectPanelWS() {
     try { s = JSON.parse(ev.data); } catch { return; }
     renderStatus(s.status);
     renderLive(s.live);
+    renderSession(s.session);
     renderRecording(s.recording);
     renderPlayback(s.playback);
     renderEspState(s.esp);
   };
   ws.onclose = () => {
-    startFallback();                 // keep the panel live via REST…
-    setTimeout(connectPanelWS, 1000); // …and retry the socket
+    startFallback();
+    setTimeout(connectPanelWS, 1000);
   };
   ws.onerror = () => { try { ws.close(); } catch { /**/ } };
 }
 
 // ── Wiring (commands — all REST) ────────────────────────────────────────────
 function wire() {
+  // ESP
   $("host-set").onclick = action(() => {
     const ip = $("host-ip").value.trim() || null;
     return api("POST", "/api/esp/host", { ip });
   });
-
   $("super-add").onclick = action(() => {
     const deps = $("super-deps").value.split(",")
       .map((d) => parseInt(d.trim(), 10)).filter((d) => !Number.isNaN(d));
@@ -388,22 +494,51 @@ function wire() {
       skip: parseInt($("super-skip").value, 10),
     });
   });
-
   $("preset-save").onclick = () => savePreset($("preset-name").value.trim());
 
-  $("rec-start").onclick  = action(() => api("POST", "/api/recording/start"));
-  $("rec-stop").onclick   = action(() => api("POST", "/api/recording/stop").then(refreshSessions));
+  // Session
+  $("session-open").onclick = action(() => api("POST", "/api/session/start", {
+    title: $("sess-title").value.trim(),
+    location: $("sess-location").value.trim(),
+    equipment: {
+      imu:    $("sess-eq-imu").value.trim(),
+      camera: $("sess-eq-camera").value.trim(),
+      focale: $("sess-eq-focale").value.trim(),
+      roue:   $("sess-eq-roue").value.trim(),
+    },
+    comments: $("sess-comments").value,
+    firmware_version: $("sess-fw").value.trim(),
+  }));
+  $("sess-comments-save").onclick = action(() =>
+    api("PATCH", "/api/session", { comments: $("sess-comments-edit").value }));
+  $("session-close").onclick = action(() =>
+    api("POST", "/api/session/close").then(refreshSessions));
+
+  // Take recording
+  $("rec-start").onclick = action(() => api("POST", "/api/recording/start", {
+    title: $("take-title").value.trim(),
+    performer: $("take-performer").value.trim(),
+    figures: $("take-figures").value.split(",")
+      .map((f) => f.trim()).filter(Boolean),
+    notes: $("take-notes").value,
+  }));
+  $("rec-stop").onclick = action(() =>
+    api("POST", "/api/recording/stop").then(() => {
+      $("take-title").value = "";   // next take gets its auto title
+      refreshSessions();
+    }));
   $("rec-marker").onclick = action(() => api("POST", "/api/recording/marker"));
 
+  // Playback
   $("session-refresh").onclick = refreshSessions;
-  $("session-select").onchange = updateSessionMeta;
-
+  $("playback-session").onchange = populateTakeSelect;
+  $("playback-take").onchange = updateTakeMeta;
   document.querySelectorAll(".speed-preset").forEach((b) => {
     b.onclick = () => { $("playback-speed").value = b.dataset.speed; };
   });
-
   $("playback-start").onclick = action(() => api("POST", "/api/playback/start", {
-    name: $("session-select").value,
+    session: $("playback-session").value,
+    take: $("playback-take").value,
     speed: parseFloat($("playback-speed").value),
     loop: $("playback-loop").checked,
   }));

@@ -152,12 +152,18 @@ def status_dict() -> dict:
     }
 
 
+def session_dict() -> dict | None:
+    """Active session metadata with its takes, or None when no session is open."""
+    return session_manager.active_tree()
+
+
 def recording_dict() -> dict:
-    """Current recording state."""
+    """Current take-recording state."""
     meta = csv_logger._meta
     return {
         "active":       csv_logger.active,
-        "session":      meta.name if meta else None,
+        "take":         meta.name if meta else None,
+        "title":        meta.title if meta else None,
         "packet_count": meta.packet_count if meta else 0,
     }
 
@@ -169,6 +175,7 @@ def playback_dict() -> dict:
     return {
         "active":    pb.active,
         "session":   pb.session,
+        "take":      pb.take,
         "index":     pb.index,
         "total":     pb.total,
         "percent":   percent,
@@ -184,6 +191,7 @@ def panel_snapshot() -> dict:
     return {
         "status":    status_dict(),
         "live":      monitor.snapshot(),
+        "session":   session_dict(),
         "recording": recording_dict(),
         "playback":  playback_dict(),
         "esp":       configurator.state,
@@ -211,7 +219,7 @@ async def startup() -> None:
     await asyncio.to_thread(configurator.set_host, my_ip)
 
     _tasks.append(asyncio.ensure_future(processing_loop(queue, ws_server)))
-    _tasks.append(asyncio.ensure_future(log_stats(10.0, queue, udp_protocol, ws_server)))
+    _tasks.append(asyncio.ensure_future(log_stats(30.0, queue, udp_protocol, ws_server)))
 
     log.info("Orchestrator ready")
 

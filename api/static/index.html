@@ -79,23 +79,70 @@
       </fieldset>
     </section>
 
-    <!-- Enregistrement CSV -->
+    <!-- Session -->
+    <section class="card" id="session-card">
+      <h2>Session</h2>
+
+      <!-- No active session: creation form -->
+      <div id="session-form">
+        <label>Titre <input id="sess-title" type="text" placeholder="ex. répétition trianon"></label>
+        <label>Lieu <input id="sess-location" type="text"></label>
+        <fieldset>
+          <legend>Matériel</legend>
+          <label>IMU <input id="sess-eq-imu" type="text" placeholder="BNO085 #2"></label>
+          <label>Caméra <input id="sess-eq-camera" type="text"></label>
+          <label>Focale <input id="sess-eq-focale" type="text"></label>
+          <label>Roue <input id="sess-eq-roue" type="text" placeholder="modèle / diamètre"></label>
+        </fieldset>
+        <label>Firmware ESP32 <input id="sess-fw" type="text" placeholder="ex. v0.3"></label>
+        <label class="block">Commentaires
+          <textarea id="sess-comments" rows="2"></textarea>
+        </label>
+        <button id="session-open">Ouvrir la session</button>
+      </div>
+
+      <!-- Active session: header + editable comments + takes -->
+      <div id="session-active" hidden>
+        <div id="sess-header" class="state-box"></div>
+        <label class="block">Commentaires
+          <textarea id="sess-comments-edit" rows="3"></textarea>
+        </label>
+        <div class="row">
+          <button id="sess-comments-save">Sauver les commentaires</button>
+          <button id="session-close" class="danger">Clore la session</button>
+        </div>
+        <h3>Takes</h3>
+        <div id="takes-list" class="slot-list"><span class="muted">Aucun take.</span></div>
+      </div>
+    </section>
+
+    <!-- Enregistrement d'un take -->
     <section class="card">
-      <h2>Enregistrement CSV</h2>
-      <div id="rec-status" class="state-box muted">…</div>
-      <button id="rec-start">Démarrer</button>
-      <button id="rec-stop" class="danger">Arrêter</button>
-      <button id="rec-marker">Marqueur sync</button>
+      <h2>Enregistrement — Take</h2>
+      <div id="take-no-session" class="muted">Ouvre une session pour enregistrer.</div>
+      <div id="take-controls" hidden>
+        <label>Titre <input id="take-title" type="text" placeholder="auto : take NNN"></label>
+        <label>Performeur <input id="take-performer" type="text"></label>
+        <label>Figures <input id="take-figures" type="text" placeholder="séparées par des virgules"></label>
+        <label class="block">Notes
+          <textarea id="take-notes" rows="2"></textarea>
+        </label>
+        <div id="rec-status" class="state-box muted">…</div>
+        <button id="rec-start">Démarrer</button>
+        <button id="rec-stop" class="danger">Arrêter</button>
+        <button id="rec-marker">Marqueur sync</button>
+      </div>
     </section>
 
     <!-- Playback -->
     <section class="card">
       <h2>Playback</h2>
       <div class="row">
-        <select id="session-select"></select>
+        <select id="playback-session"></select>
+        <select id="playback-take"></select>
         <button id="session-refresh">↻</button>
       </div>
-      <div id="session-meta" class="muted"></div>
+      <div id="take-meta" class="muted"></div>
       <div class="row">
         <span>Vitesse</span>
         <button class="speed-preset" data-speed="0.5">0.5×</button>
