@@ -4,5 +4,4 @@
 *.log
 *pyc
 __pycache__/
-claude.md
 sessions
