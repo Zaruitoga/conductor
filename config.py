@@ -16,6 +16,12 @@ API_PORT = 8000          # FastAPI control panel + REST API
 ESP_HOST    = "imu-cyrwheel.local"
 CONFIG_PORT = 4211             # config port: PC → ESP commands and ACK replies
 
+# How long to wait for a CFG_ACK after a command. The firmware now yields to its
+# config poll every ~50 ms (DRAIN_BUDGET_MS), so commands are acked in <100 ms
+# (measured ~54 ms). 1 s leaves ample margin for an occasional flash write
+# (saveNVS on set_simple/set_super) or a WiFi hiccup.
+CONFIG_ACK_TIMEOUT_S = 1.0
+
 # ESP health monitoring
 HEARTBEAT_TIMEOUT_S = 6.0   # no heartbeat for this long ⇒ ESP considered offline
 RATE_TOLERANCE      = 0.25  # a stream is "conform" if measured Hz ≥ expected × (1 − this)

@@ -63,6 +63,7 @@ configurator = EspConfigurator(
     esp_host    = config.ESP_HOST,
     config_port = config.CONFIG_PORT,
     local_port  = config.CONFIG_PORT,
+    timeout     = config.CONFIG_ACK_TIMEOUT_S,
     layout      = layout,
 )
 

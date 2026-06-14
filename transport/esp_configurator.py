@@ -8,49 +8,28 @@ After each ACK, the shared SuperSlotLayout is updated so that the UDP
 receiver can immediately decode subsequent super-slot packets into properly
 named fields.
 
-Config protocol (PC → ESP):
+The wire format (command bodies, ACK layout, struct definitions) lives in
+`transport/protocol.py`; this module only owns the socket and the connection
+state.  Commands are built with `protocol.build_*` and the reply is parsed
+with `protocol.parse_ack`.
 
-  CfgHeader (4 bytes): version(B) type(B) size(H)
-  Body by type:
-    CFG_SET_SIMPLE (0x01)  slot(B) enabled(B) rate_us(I)
-    CFG_SET_SUPER  (0x02)  slot(B) n_deps(B) skip(B) dep_slots[n_deps]
-    CFG_DEL_SUPER  (0x03)  slot(B)
-    CFG_GET_STATE  (0x04)  (no body)
-    CFG_SET_HOST   (0x05)  ip[4]
+Each command flushes any stale/late ACK still buffered before sending, and
+reads the freshest reply, so the displayed state never lags a command behind
+(important because the firmware can take a few seconds to answer).
 
-ACK format (ESP → PC):
-
-  DataHeader (12 bytes) + n_simple(B) + AckSimpleEntry[8] (12 bytes each)
-                        + n_super(B)  + AckSuperEntry[8]  (14 bytes each)
-                        + host_ip[4]
-
-All public methods are blocking (< 2 s timeout).
+All public methods are blocking (`timeout` seconds, default from
+config.CONFIG_ACK_TIMEOUT_S).
 Call from asyncio via: await loop.run_in_executor(None, cfg.method, ...)
 """
 
 import socket
-import struct
 import logging
 
+from transport import protocol
+from transport.protocol import SLOT_NAME
 from transport.super_layout import SuperSlotLayout
 
 log = logging.getLogger("esp_configurator")
-
-CFG_SET_SIMPLE = 0x01
-CFG_SET_SUPER  = 0x02
-CFG_DEL_SUPER  = 0x03
-CFG_GET_STATE  = 0x04
-CFG_SET_HOST   = 0x05
-
-CFG_HDR    = struct.Struct("<BBH")       # 4 bytes  : version type size
-DATA_HDR   = struct.Struct("<BBHII")    # 12 bytes : version type size seq ts_us
-ACK_SIMPLE = struct.Struct("<BBBBB3xI") # 12 bytes : slot sensor pkt psz enabled _pad rate
-ACK_SUPER  = struct.Struct("<BBBBBB8s") # 14 bytes : slot pkt active ndeps skip psz deps[8]
-
-SLOT_NAME = [
-    "GYRO", "ACCEL", "MAG", "LINEAR_ACCEL",
-    "RV", "GEO_RV", "GAME_RV", "ARVR_RV",
-]
 
 
 def _is_ipv4(s: str) -> bool:
@@ -172,8 +151,7 @@ class EspConfigurator:
 
     def set_host(self, ip: str) -> dict | None:
         """Tell the ESP which IP address to send sensor data to."""
-        body = bytes(int(b) for b in ip.split("."))
-        self._send(CFG_SET_HOST, body)
+        self._send(protocol.build_set_host(ip))
         ack = self._recv_ack()
         if ack:
             log.info(f"SET_HOST {ip} → OK  (ESP confirms host={ack['host']})")
@@ -181,7 +159,7 @@ class EspConfigurator:
 
     def set_simple(self, slot: int, enabled: bool, rate_us: int) -> dict | None:
         """Enable or disable a simple slot and set its sample rate."""
-        self._send(CFG_SET_SIMPLE, struct.pack("<BBI", slot, int(enabled), rate_us))
+        self._send(protocol.build_set_simple(slot, enabled, rate_us))
         ack = self._recv_ack()
         if ack:
             hz = round(1e6 / rate_us, 1) if rate_us else 0
@@ -197,8 +175,7 @@ class EspConfigurator:
         skip_ratio: int = 1,
     ) -> dict | None:
         """Create or replace a super slot."""
-        body = struct.pack("<BBB", slot, len(dep_slots), skip_ratio) + bytes(dep_slots)
-        self._send(CFG_SET_SUPER, body)
+        self._send(protocol.build_set_super(slot, dep_slots, skip_ratio))
         ack = self._recv_ack()
         if ack:
             names = [SLOT_NAME[d] for d in dep_slots if d < len(SLOT_NAME)]
@@ -207,7 +184,7 @@ class EspConfigurator:
 
     def del_super(self, slot: int) -> dict | None:
         """Delete a super slot."""
-        self._send(CFG_DEL_SUPER, struct.pack("<B", slot))
+        self._send(protocol.build_del_super(slot))
         ack = self._recv_ack()
         if ack:
             log.info(f"DEL_SUPER slot={slot} → OK")
@@ -215,77 +192,71 @@ class EspConfigurator:
 
     def get_state(self) -> dict | None:
         """Request the full ESP state, update the layout, and return parsed state."""
-        self._send(CFG_GET_STATE)
+        self._send(protocol.build_get_state())
         return self._recv_ack()
 
-    def _send(self, cfg_type: int, body: bytes = b"") -> None:
-        hdr = CFG_HDR.pack(1, cfg_type, CFG_HDR.size + len(body))
-        self._sock.sendto(hdr + body, (self._esp_ip, self._config_port))
+    def _send(self, datagram: bytes) -> None:
+        # Drop any datagram still buffered from a previous exchange (e.g. a late
+        # ACK that arrived after we had already timed out) so the reply we read
+        # next corresponds to the command we are about to send, not a stale one.
+        dropped = self._flush()
+        if dropped:
+            log.debug(f"Discarded {dropped} stale datagram(s) before send")
+        self._sock.sendto(datagram, (self._esp_ip, self._config_port))
+
+    def _flush(self) -> int:
+        """Discard all datagrams currently buffered on the socket. Non-blocking."""
+        self._sock.settimeout(0)
+        dropped = 0
+        try:
+            while True:
+                try:
+                    self._sock.recv(512)
+                    dropped += 1
+                except (BlockingIOError, socket.timeout):
+                    break
+        finally:
+            self._sock.settimeout(self._timeout)
+        return dropped
 
     def _recv_ack(self) -> dict | None:
-        """Wait for a CFG_ACK datagram and return the parsed state, or None on timeout."""
+        """
+        Wait for a CFG_ACK and return the parsed state, or None on timeout.
+
+        Blocks up to `self._timeout` for the first reply, then non-blockingly
+        drains any further replies already queued and keeps the most recent —
+        so a late ACK from an earlier command can never make us display stale
+        state.
+        """
         try:
             data, _ = self._sock.recvfrom(512)
         except socket.timeout:
             log.warning("Timeout — no response from ESP")
             return None
 
-        if len(data) < DATA_HDR.size:
+        # Keep only the freshest datagram if several are already buffered.
+        self._sock.settimeout(0)
+        try:
+            while True:
+                try:
+                    data, _ = self._sock.recvfrom(512)
+                except (BlockingIOError, socket.timeout):
+                    break
+        finally:
+            self._sock.settimeout(self._timeout)
+
+        if len(data) < protocol.DATA_HEADER_SIZE:
             log.warning(f"ACK too short: {len(data)} bytes")
             return None
 
-        _, pkt_type, _, _, _ = DATA_HDR.unpack_from(data)
-        if pkt_type != 0x30:
+        _, pkt_type, _, _, _ = protocol.DATA_HEADER.unpack_from(data)
+        if pkt_type != protocol.ACK_TYPE:
             log.warning(f"Unexpected response type: 0x{pkt_type:02X}")
             return None
 
-        return self._parse_ack(data)
-
-    def _parse_ack(self, data: bytes) -> dict:
-        """
-        Deserialise a CFG_ACK datagram into a state dict and update the layout.
-
-        After this call, SuperSlotLayout reflects the current ESP configuration,
-        so the UDP receiver will immediately decode subsequent super-slot packets
-        into named fields.
-        """
-        off = DATA_HDR.size
-
-        n_simple = data[off]; off += 1
-        simples = []
-        for _ in range(n_simple):
-            slot, sensor, pkt, psz, enabled, rate = ACK_SIMPLE.unpack_from(data, off)
-            simples.append(dict(
-                slot=slot,
-                sensor_id=hex(sensor),
-                pkt_type=hex(pkt),
-                payload_sz=psz,
-                enabled=bool(enabled),
-                rate_hz=round(1e6 / rate, 1) if rate else 0,
-                rate_us=rate,
-            ))
-            off += ACK_SIMPLE.size
-
-        n_super = data[off]; off += 1
-        supers = []
-        for _ in range(n_super):
-            slot, pkt, active, n_deps, skip, psz, dep_raw = ACK_SUPER.unpack_from(data, off)
-            supers.append(dict(
-                slot=slot,
-                active=bool(active),
-                n_deps=n_deps,
-                skip_ratio=skip,
-                payload_sz=psz,
-                deps=list(dep_raw[:n_deps]),
-            ))
-            off += ACK_SUPER.size
-
-        host = (
-            ".".join(str(b) for b in data[off:off + 4])
-            if off + 4 <= len(data) else "?"
-        )
-
-        state = dict(simples=simples, supers=supers, host=host)
+        # protocol.parse_ack is pure; the side effects (layout sync, state
+        # cache, logging) belong to this stateful client.
+        state = protocol.parse_ack(data)
 
         # Propagate to the shared layout so the UDP receiver decodes named fields
         if self._layout is not None:
