@@ -33,7 +33,7 @@ import csv
 import logging
 
 from storage.session_manager import SessionManager, TakeMeta
-from transport.super_layout import ALL_SUPER_NAMED_FIELDS
+from transport.protocol import ALL_SUPER_NAMED_FIELDS
 
 log = logging.getLogger("csv_logger")
 

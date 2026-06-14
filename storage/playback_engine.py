@@ -24,7 +24,7 @@ import logging
 import os
 
 from storage.session_manager import SessionManager
-from transport.super_layout import ALL_SUPER_NAMED_FIELDS
+from transport.protocol import ALL_SUPER_NAMED_FIELDS
 
 log = logging.getLogger("playback_engine")
 

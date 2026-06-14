@@ -18,7 +18,7 @@ snapshot() returns one JSON-friendly dict consumed by the panel; see its
 docstring for the shape.  All access is from the event-loop thread.
 """
 
-from transport.udp_receiver import TYPE_NAME
+from transport.protocol import TYPE_NAME
 
 # Types that are never "expected sensor streams": telemetry and pipeline output.
 _IGNORED_STREAMS = frozenset({"heartbeat", "computed"})
