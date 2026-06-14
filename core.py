@@ -24,6 +24,7 @@ from transport.udp_receiver     import start_udp_receiver
 from transport.esp_configurator import EspConfigurator
 from transport.ws_server        import WSServer
 from transport.live_monitor     import LiveMonitor
+from transport.esp_health        import EspHealth
 from pipeline.torus_position    import TorusPositionStage
 from storage.session_manager    import SessionManager
 from storage.csv_logger         import CSVLogger
@@ -63,6 +64,14 @@ configurator = EspConfigurator(
     config_port = config.CONFIG_PORT,
     local_port  = config.CONFIG_PORT,
     layout      = layout,
+)
+
+# Unified ESP health: fuses heartbeat presence/telemetry with stream
+# conformance (measured rates vs the configured ESP state). Single UI verdict.
+esp_health = EspHealth(
+    monitor, configurator,
+    heartbeat_timeout_s = config.HEARTBEAT_TIMEOUT_S,
+    rate_tolerance      = config.RATE_TOLERANCE,
 )
 
 # Runtime handles — populated by startup(), referenced by the API routes.
@@ -209,6 +218,7 @@ def panel_snapshot() -> dict:
     return {
         "status":    status_dict(),
         "live":      monitor.snapshot(),
+        "health":    esp_health.snapshot(),
         "session":   session_dict(),
         "recording": recording_dict(),
         "playback":  playback_dict(),

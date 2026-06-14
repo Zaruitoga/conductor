@@ -19,19 +19,29 @@
   </header>
 
   <main>
+    <!-- ESP : santé & connexion (source unique) -->
+    <section class="card" id="health-card">
+      <h2>ESP — Santé &amp; connexion</h2>
+      <div id="health-summary" class="state-box muted">…</div>
+      <details id="health-details">
+        <summary>Détails</summary>
+        <h3>Flux (mesuré vs config)</h3>
+        <table id="health-streams">
+          <thead>
+            <tr><th>Flux</th><th class="num">Attendu</th><th class="num">Mesuré</th><th>État</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <h3>Télémétrie</h3>
+        <div id="health-telemetry" class="state-box">—</div>
+      </details>
+    </section>
+
     <!-- Données live -->
     <section class="card">
       <h2>Données live</h2>
-      <div class="live-grid">
-        <div>
-          <h3>Débit par type</h3>
-          <table id="live-rates"><tbody></tbody></table>
-        </div>
-        <div>
-          <h3>Dernières valeurs</h3>
-          <div id="live-values" class="state-box">—</div>
-        </div>
-      </div>
+      <h3>Dernières valeurs</h3>
+      <div id="live-values" class="state-box">—</div>
     </section>
 
     <!-- ESP32 : état + contrôle -->

@@ -12,7 +12,10 @@ CSV schema:
   Simple sensor columns (blank when not applicable):
     x, y, z              Vec3   (typeId 0x01–0x04)
     qw, qx, qy, qz       Quat   (typeId 0x05–0x08)
-    percent              BAT    (typeId 0x20)
+
+  Heartbeat packets (typeId 0x20) are telemetry, not sensor data, and are
+  deliberately NOT logged — they are absent from PAYLOAD_FIELDS so write()
+  skips them.
 
   Super-slot columns (typeId 0x10–0x17):
     Named by component sensor — only the fields corresponding to the active
@@ -36,13 +39,11 @@ log = logging.getLogger("csv_logger")
 
 _VEC3_FIELDS = ("x", "y", "z")
 _QUAT_FIELDS = ("qw", "qx", "qy", "qz")
-_BAT_FIELDS  = ("percent",)
 
 CSV_FIELDS = [
     "ts_rx_us", "seq", "ts_esp_us", "type_id",
     *_VEC3_FIELDS,
     *_QUAT_FIELDS,
-    *_BAT_FIELDS,
     *ALL_SUPER_NAMED_FIELDS,
 ]
 
@@ -56,7 +57,7 @@ PAYLOAD_FIELDS: dict[int, tuple[str, ...]] = {
     0x06: _QUAT_FIELDS,
     0x07: _QUAT_FIELDS,
     0x08: _QUAT_FIELDS,
-    0x20: _BAT_FIELDS,
+    # 0x20 (heartbeat) intentionally absent — telemetry is not recorded.
     # All super types share the full named-field set; only populated fields
     # will have values — the rest are left blank by the write() method.
     **{0x10 + i: ALL_SUPER_NAMED_FIELDS for i in range(8)},

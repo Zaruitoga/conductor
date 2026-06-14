@@ -27,11 +27,12 @@ class LiveMonitor:
     """Tracks per-type packet rates, latest values, and connection liveness."""
 
     def __init__(self, window_s: float = 1.0, stale_after_s: float = 1.0):
-        self._window       = window_s
-        self._stale_after  = stale_after_s
+        self._window         = window_s
+        self._stale_after    = stale_after_s
         self._events: dict[str, deque[float]] = defaultdict(deque)  # arrival ts/type
         self._latest: dict[str, dict]         = {}                  # payload/type
         self._last_rx: float | None           = None               # monotonic
+        self._last_heartbeat: float | None    = None               # monotonic
 
     def observe(self, packet: dict) -> None:
         """Record one packet. Called for raw packets and for computed output."""
@@ -46,6 +47,8 @@ class LiveMonitor:
 
         self._latest[name] = {k: v for k, v in packet.items() if k not in _META_KEYS}
         self._last_rx = now
+        if name == "heartbeat":
+            self._last_heartbeat = now
 
     def snapshot(self) -> dict:
         """Return a JSON-serialisable view of the current live state."""
@@ -61,7 +64,9 @@ class LiveMonitor:
         age_ms    = None if self._last_rx is None else round((now - self._last_rx) * 1000)
         connected = age_ms is not None and age_ms < self._stale_after * 1000
 
-        battery  = self._latest.get("battery") or {}
+        hb_age_ms = (None if self._last_heartbeat is None
+                     else round((now - self._last_heartbeat) * 1000))
+
         computed = self._latest.get("computed")
         torus    = None
         if computed and "px" in computed:
@@ -70,8 +75,8 @@ class LiveMonitor:
         return {
             "connected":   connected,
             "age_ms":      age_ms,
+            "heartbeat_age_ms": hb_age_ms,   # consumed by EspHealth
             "rates":       dict(sorted(rates.items())),
             "latest":      self._latest,
-            "battery_pct": battery.get("percent"),
             "torus":       torus,
         }

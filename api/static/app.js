@@ -79,43 +79,83 @@ function renderStatus(s) {
 function renderLive(live) {
   if (!live) return;
 
-  const dot = $("conn-dot");
-  if (live.connected) {
-    dot.className = "dot ok";
-    $("conn-text").textContent = `Données reçues (${live.age_ms} ms)`;
-  } else {
-    dot.className = "dot bad";
-    $("conn-text").textContent =
-      live.age_ms == null ? "En attente de données" : "Silence";
-  }
-
-  const tb = $("live-rates").tBodies[0];
-  tb.innerHTML = "";
-  const rates = Object.entries(live.rates || {});
-  if (!rates.length) {
-    const td = tb.insertRow().insertCell();
-    td.colSpan = 2; td.className = "muted"; td.textContent = "—";
-  } else {
-    for (const [type, hz] of rates) {
-      const tr = tb.insertRow();
-      tr.insertCell().textContent = type;
-      const c = tr.insertCell();
-      c.textContent = hz + " Hz";
-      c.className = "num";
-    }
-  }
-
   const lines = [];
-  if (live.battery_pct != null) lines.push(`batterie : ${live.battery_pct}%`);
   if (live.torus) {
     lines.push(`tore : x=${fmt(live.torus.px)} y=${fmt(live.torus.py)} z=${fmt(live.torus.pz)}`);
   }
   for (const [type, vals] of Object.entries(live.latest || {})) {
-    if (type === "battery" || type === "computed") continue;
+    if (type === "heartbeat" || type === "computed") continue;
     const parts = Object.entries(vals).map(([k, v]) => `${k}=${fmt(v)}`);
     if (parts.length) lines.push(`${type}: ${parts.join("  ")}`);
   }
   $("live-values").textContent = lines.length ? lines.join("\n") : "—";
+}
+
+// ── Render: ESP health (unified — drives the header dot + the health card) ──
+const STATE_DOT   = { online: "ok", degraded: "warn", offline: "bad" };
+const STATE_LABEL = { online: "● En ligne", degraded: "● Dégradé", offline: "● Hors ligne" };
+const STATUS_LABEL = { ok: "ok", slow: "lent", missing: "absent", unexpected: "inattendu" };
+
+function fmtUptime(ms) {
+  if (ms == null) return "?";
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  if (h) return `${h}h${String(m).padStart(2, "0")}`;
+  if (m) return `${m}m${String(sec).padStart(2, "0")}`;
+  return `${sec}s`;
+}
+
+function renderHealth(health) {
+  if (!health) return;
+  const state = health.state || "offline";
+
+  $("conn-dot").className = "dot " + (STATE_DOT[state] || "bad");
+  $("conn-text").textContent = health.reason || state;
+
+  const hb = health.heartbeat;
+  const summary = [STATE_LABEL[state] || state];
+  if (health.reason) summary.push(health.reason);
+  if (hb) {
+    if (hb.battery_pct != null) summary.push(`batterie ${hb.battery_pct.toFixed(0)}%`);
+    if (hb.uptime_ms != null) summary.push(`uptime ${fmtUptime(hb.uptime_ms)}`);
+  }
+  $("health-summary").textContent = summary.join("  ·  ");
+
+  const tb = $("health-streams").tBodies[0];
+  tb.innerHTML = "";
+  const streams = health.streams || [];
+  if (!streams.length) {
+    const td = tb.insertRow().insertCell();
+    td.colSpan = 4; td.className = "muted"; td.textContent = "—";
+  } else {
+    for (const s of streams) {
+      const tr = tb.insertRow();
+      tr.insertCell().textContent = s.type;
+      const exp = tr.insertCell();
+      exp.textContent = s.expected_hz == null ? "—" : s.expected_hz + " Hz";
+      exp.className = "num";
+      const act = tr.insertCell();
+      act.textContent = s.actual_hz + " Hz";
+      act.className = "num";
+      const st = tr.insertCell();
+      st.textContent = STATUS_LABEL[s.status] || s.status;
+      st.className = "st-" + s.status;
+    }
+  }
+
+  if (hb) {
+    $("health-telemetry").textContent = [
+      `uptime : ${fmtUptime(hb.uptime_ms)}`,
+      `RSSI : ${hb.rssi_dbm} dBm`,
+      `CPU : ${hb.cpu_temp_c != null ? hb.cpu_temp_c.toFixed(1) : "?"} °C`,
+      `batterie : ${hb.battery_pct != null ? hb.battery_pct.toFixed(1) + " %" : "—"}`,
+      `paquets envoyés : ${hb.packets_sent}`,
+      `erreurs UDP : ${hb.udp_errors}`,
+      `dernier heartbeat : ${hb.age_ms} ms`,
+    ].join("\n");
+  } else {
+    $("health-telemetry").textContent = "Aucun heartbeat reçu.";
+  }
 }
 
 // ── Render: session / takes ─────────────────────────────────────────────────
@@ -447,8 +487,9 @@ async function pollStatus()    { try { renderStatus(await api("GET", "/api/statu
 async function pollSession()   { try { renderSession((await api("GET", "/api/session")).session); } catch { /**/ } }
 async function pollRecording() { try { renderRecording(await api("GET", "/api/recording/status")); } catch { /**/ } }
 async function pollPlayback()  { try { renderPlayback(await api("GET", "/api/playback/status")); } catch { /**/ } }
-async function pollLive() {
-  try { renderLive(await api("GET", "/api/live")); }
+async function pollLive()  { try { renderLive(await api("GET", "/api/live")); } catch { /**/ } }
+async function pollHealth() {
+  try { renderHealth(await api("GET", "/api/health")); }
   catch {
     $("conn-dot").className = "dot bad";
     $("conn-text").textContent = "API injoignable";
@@ -458,8 +499,8 @@ async function pollLive() {
 let fallbackTimers = [];
 function startFallback() {
   if (fallbackTimers.length) return;
-  pollStatus(); pollLive(); pollSession(); pollRecording(); pollPlayback();
-  fallbackTimers.push(setInterval(() => { pollLive(); pollPlayback(); }, 400));
+  pollStatus(); pollLive(); pollHealth(); pollSession(); pollRecording(); pollPlayback();
+  fallbackTimers.push(setInterval(() => { pollLive(); pollHealth(); pollPlayback(); }, 400));
   fallbackTimers.push(setInterval(() => { pollStatus(); pollSession(); pollRecording(); }, 1000));
 }
 function stopFallback() {
@@ -478,6 +519,7 @@ function connectPanelWS() {
     try { s = JSON.parse(ev.data); } catch { return; }
     renderStatus(s.status);
     renderLive(s.live);
+    renderHealth(s.health);
     renderSession(s.session);
     renderRecording(s.recording);
     renderPlayback(s.playback);

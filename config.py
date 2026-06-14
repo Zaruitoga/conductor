@@ -16,6 +16,10 @@ API_PORT = 8000          # FastAPI control panel + REST API
 ESP_HOST    = "imu-cyrwheel.local"
 CONFIG_PORT = 4211             # config port: PC → ESP commands and ACK replies
 
+# ESP health monitoring
+HEARTBEAT_TIMEOUT_S = 6.0   # no heartbeat for this long ⇒ ESP considered offline
+RATE_TOLERANCE      = 0.25  # a stream is "conform" if measured Hz ≥ expected × (1 − this)
+
 # Torus geometry
 R_TORE = 1.0             # major radius (metres)
 r_TORE = 0.05            # tube radius (metres)

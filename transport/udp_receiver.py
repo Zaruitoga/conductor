@@ -23,8 +23,16 @@ Protocol (firmware 260524_BNO_super_reports):
     0x07  GAME_RV        Quat   w, x, y, z          16 bytes
     0x08  ARVR_RV        Quat   w, x, y, z          16 bytes
     0x10–0x17 SUPER_0–7  concatenated dep payloads  variable
-    0x20  BAT            float  percent             4 bytes
+    0x20  HEARTBEAT      ESP health beacon          24 bytes (see below)
     0x30  CFG_ACK        handled by EspConfigurator, silently ignored here
+
+  Heartbeat payload (24 bytes, little-endian <IIIiff):
+    uint32 uptime_ms       millis() since boot
+    uint32 packets_sent    total UDP data packets sent since boot
+    uint32 udp_errors      endPacket() failures since boot
+    int32  rssi_dbm        WiFi.RSSI()
+    float  cpu_temp_c      temperatureRead()
+    float  battery_pct     cellPercent(), or -1 if no fuel gauge
 
 Super-slot field naming:
 
@@ -55,20 +63,22 @@ HEADER_SIZE = HEADER.size
 VEC3_TYPES = frozenset({0x01, 0x02, 0x03, 0x04})
 QUAT_TYPES = frozenset({0x05, 0x06, 0x07, 0x08})
 SUPER_BASE, SUPER_MAX = 0x10, 0x17
-BAT_TYPE  = 0x20
+HB_TYPE   = 0x20
 ACK_TYPE  = 0x30
+
+HEARTBEAT = struct.Struct("<IIIiff")   # 24 bytes
 
 # Expected payload size for fixed-size types (excludes super and ACK)
 FIXED_PAYLOAD_SIZE = {
     0x01: 12, 0x02: 12, 0x03: 12, 0x04: 12,   # Vec3
     0x05: 16, 0x06: 16, 0x07: 16, 0x08: 16,   # Quat
-    0x20: 4,                                    # BAT
+    0x20: HEARTBEAT.size,                       # HEARTBEAT
 }
 
 TYPE_NAME = {
     0x01: "gyro",         0x02: "accel",    0x03: "mag",
     0x04: "linear_accel", 0x05: "rv",       0x06: "geo_rv",
-    0x07: "game_rv",      0x08: "arvr_rv",  0x20: "battery",
+    0x07: "game_rv",      0x08: "arvr_rv",  0x20: "heartbeat",
 }
 for _i in range(8):
     TYPE_NAME[0x10 + _i] = f"super_{_i}"
@@ -171,9 +181,17 @@ def parse_packet(
                 off += n * 4
             packet["dep_slots"] = list(deps)
 
-    elif type_id == BAT_TYPE:
-        percent, = struct.unpack_from("<f", payload)
-        packet["percent"] = percent
+    elif type_id == HB_TYPE:
+        (uptime_ms, packets_sent, udp_errors,
+         rssi_dbm, cpu_temp_c, battery_pct) = HEARTBEAT.unpack_from(payload)
+        packet.update(
+            uptime_ms=uptime_ms,
+            packets_sent=packets_sent,
+            udp_errors=udp_errors,
+            rssi_dbm=rssi_dbm,
+            cpu_temp_c=cpu_temp_c,
+            battery_pct=battery_pct,
+        )
 
     return packet
 

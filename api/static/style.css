@@ -40,8 +40,18 @@ body {
   width: 10px; height: 10px; border-radius: 50%;
   background: var(--muted); display: inline-block;
 }
-.dot.ok  { background: var(--ok);  box-shadow: 0 0 6px var(--ok); }
-.dot.bad { background: var(--bad); }
+.dot.ok   { background: var(--ok);   box-shadow: 0 0 6px var(--ok); }
+.dot.warn { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
+.dot.bad  { background: var(--bad); }
+
+/* ESP health stream-status cell colours */
+.st-ok         { color: var(--ok); }
+.st-slow       { color: var(--warn); }
+.st-missing    { color: var(--bad); }
+.st-unexpected { color: var(--muted); }
+
+#health-streams td.num { text-align: right; font-family: ui-monospace, monospace; }
+#health-details summary { cursor: pointer; color: var(--muted); margin-bottom: 8px; }
 
 .mode {
   font-weight: 600; font-size: 12px;
@@ -138,18 +148,12 @@ button.danger { background: var(--bad); }
 /* ── Données live ─────────────────────────────────────────────────────────── */
 .card h3 { margin: 0 0 6px; font-size: 13px; color: var(--muted); font-weight: 600; }
 
-.live-grid {
-  display: grid;
-  grid-template-columns: 1fr 1.4fr;
-  gap: 12px;
-}
-.live-grid > div { min-width: 0; }
-
-#live-rates { width: 100%; border-collapse: collapse; font-size: 12px; }
-#live-rates td { padding: 2px 6px; border-bottom: 1px solid var(--border); }
-#live-rates td.num { text-align: right; font-family: ui-monospace, monospace; color: var(--accent); }
-
 #live-values { margin: 0; max-height: 220px; overflow: auto; }
+
+/* ── Santé ESP ────────────────────────────────────────────────────────────── */
+#health-streams { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 10px; }
+#health-streams th { text-align: left; padding: 2px 6px; color: var(--muted); font-weight: 600; }
+#health-streams td { padding: 2px 6px; border-bottom: 1px solid var(--border); }
 
 /* ── Lignes de slot / préset ──────────────────────────────────────────────── */
 .slot-list { display: flex; flex-direction: column; gap: 4px; }

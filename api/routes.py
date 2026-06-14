@@ -51,6 +51,12 @@ async def get_live() -> dict:
     return core.monitor.snapshot()
 
 
+@router.get("/health")
+async def get_health() -> dict:
+    """Unified ESP health verdict (REST fallback for the WS push)."""
+    return core.esp_health.snapshot()
+
+
 @router.get("/session")
 async def get_session() -> dict:
     """Active session meta (REST fallback for the WS push)."""

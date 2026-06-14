@@ -28,25 +28,24 @@ from transport.super_layout import ALL_SUPER_NAMED_FIELDS
 
 log = logging.getLogger("playback_engine")
 
-# Must stay in sync with udp_receiver.py
+# Must stay in sync with udp_receiver.py — except type 0x20 (heartbeat), which
+# is telemetry never written to the CSV, so there is nothing to replay for it.
 PACKET_TYPES: dict[int, str] = {
     0x01: "gyro",         0x02: "accel",    0x03: "mag",
     0x04: "linear_accel", 0x05: "rv",       0x06: "geo_rv",
-    0x07: "game_rv",      0x08: "arvr_rv",  0x20: "battery",
+    0x07: "game_rv",      0x08: "arvr_rv",
 }
 for _i in range(8):
     PACKET_TYPES[0x10 + _i] = f"super_{_i}"
 
 _VEC3_FIELDS = ("x", "y", "z")
 _QUAT_FIELDS = ("qw", "qx", "qy", "qz")
-_BAT_FIELDS  = ("percent",)
 
 PAYLOAD_FIELDS: dict[int, tuple[str, ...]] = {
     0x01: _VEC3_FIELDS,  0x02: _VEC3_FIELDS,
     0x03: _VEC3_FIELDS,  0x04: _VEC3_FIELDS,
     0x05: _QUAT_FIELDS,  0x06: _QUAT_FIELDS,
     0x07: _QUAT_FIELDS,  0x08: _QUAT_FIELDS,
-    0x20: _BAT_FIELDS,
     # Super types: scan all named fields; only populated columns are loaded
     **{0x10 + i: ALL_SUPER_NAMED_FIELDS for i in range(8)},
 }
