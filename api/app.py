@@ -19,6 +19,7 @@ from api.routes import router
 log = logging.getLogger("api")
 
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+_VIZ_DIR    = os.path.join(os.path.dirname(__file__), "viz")
 
 
 @asynccontextmanager
@@ -39,4 +40,7 @@ async def index() -> FileResponse:
     return FileResponse(os.path.join(_STATIC_DIR, "index.html"))
 
 
-app.mount("/", StaticFiles(directory=_STATIC_DIR), name="static")
+# The root mount is a catch-all, so /viz must be registered before it.
+# html=True makes /viz/ serve the visualiser's index.html.
+app.mount("/viz", StaticFiles(directory=_VIZ_DIR, html=True), name="viz")
+app.mount("/",    StaticFiles(directory=_STATIC_DIR), name="static")

@@ -25,6 +25,7 @@ from transport.esp_configurator import EspConfigurator
 from transport.ws_server        import WSServer
 from transport.live_monitor     import LiveMonitor
 from transport.esp_health        import EspHealth
+from transport.protocol         import HB_TYPE
 from pipeline.torus_position    import TorusPositionStage
 from storage.session_manager    import SessionManager
 from storage.csv_logger         import CSVLogger
@@ -35,6 +36,10 @@ log = logging.getLogger("core")
 
 def _local_ip() -> str:
     """Detect the active local IP by opening a dummy UDP connection."""
+    if config.SIM_ENABLED:
+        # The fake ESP32 lives on this machine; announcing the LAN address
+        # would work but needlessly breaks when there is no network at all.
+        return "127.0.0.1"
     s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
     s.connect(("8.8.8.8", 80))
     ip = s.getsockname()[0]
@@ -62,7 +67,7 @@ monitor = LiveMonitor()
 configurator = EspConfigurator(
     esp_host    = config.ESP_HOST,
     config_port = config.CONFIG_PORT,
-    local_port  = config.CONFIG_PORT,
+    local_port  = config.CONFIG_LOCAL_PORT,
     timeout     = config.CONFIG_ACK_TIMEOUT_S,
     layout      = layout,
 )
@@ -80,7 +85,25 @@ queue:        asyncio.Queue | None = None
 ws_server:    WSServer | None      = None
 udp_protocol = None
 _transport   = None
+_simulator   = None                  # fake ESP32, only when config.SIM_EMBEDDED
 _tasks: list[asyncio.Task] = []
+
+
+def accept_live(packet: dict) -> bool:
+    """
+    Admission gate for live UDP packets — playback owns the pipeline.
+
+    The queue has two producers (UDPReceiver and PlaybackEngine) and they carry
+    unrelated `ts_esp_us` time bases.  Interleaved, they make the dt that
+    TorusPositionStage derives from that field meaningless and its Euler
+    integration of px/py diverges.  So a running replay is exclusive: live
+    sensor packets are dropped at the socket for its whole duration.
+
+    The heartbeat is exempt.  It is live-only telemetry (never written to the
+    CSV, hence never replayed), it carries no ts-based state, and without it
+    EspHealth would report the ESP offline a few seconds into every replay.
+    """
+    return not playback_engine.active or packet.get("typeId") == HB_TYPE
 
 
 async def processing_loop(q: asyncio.Queue, ws: WSServer) -> None:
@@ -97,7 +120,14 @@ async def processing_loop(q: asyncio.Queue, ws: WSServer) -> None:
         packet = await q.get()
 
         if packet.get("typeId") == "playback_end":
+            # Reset here, not in PlaybackEngine: the sentinel is the point in the
+            # *stream* where the replay ends, so stateful stages are cleared
+            # before the live packets queued behind it are integrated. Resetting
+            # only at the start of a replay pass (as PlaybackEngine does) would
+            # leave the take's final px/py as the live mode's starting offset.
             log.info("Playback session ended — returning to IDLE")
+            for stage in PIPELINE_STAGES:
+                await stage.reset()
             q.task_done()
             continue
 
@@ -166,11 +196,18 @@ def status_dict() -> dict:
         "udp": {
             "rx":          udp_protocol.stats["rx"]     if udp_protocol else 0,
             "errors":      udp_protocol.stats["errors"] if udp_protocol else 0,
+            # Live packets dropped at the socket because a replay owns the
+            # pipeline (see accept_live) — grows only during playback.
+            "muted":       udp_protocol.stats["muted"]  if udp_protocol else 0,
             "last_esp_ip": udp_protocol.last_esp_ip     if udp_protocol else None,
         },
         "ws": {
             "tx":      ws_server.stats["tx"]   if ws_server else 0,
             "clients": len(ws_server.clients) if ws_server else 0,
+            # Packets dropped for a client that could not keep up (drop-oldest
+            # fan-out). Non-zero means a downstream viewer is lagging — the
+            # pipeline itself is never held back for it.
+            "dropped": ws_server.stats["dropped"] if ws_server else 0,
         },
         "esp_net": {
             "hostname": configurator.hostname,
@@ -202,6 +239,7 @@ def playback_dict() -> dict:
     percent = round(100 * pb.index / pb.total, 1) if pb.total else 0.0
     return {
         "active":    pb.active,
+        "paused":    pb.paused,
         "session":   pb.session,
         "take":      pb.take,
         "index":     pb.index,
@@ -229,7 +267,7 @@ def panel_snapshot() -> dict:
 
 async def startup() -> None:
     """Boot all subsystems and launch the background tasks."""
-    global queue, ws_server, udp_protocol, _transport
+    global queue, ws_server, udp_protocol, _transport, _simulator
 
     queue = asyncio.Queue()
 
@@ -237,8 +275,16 @@ async def startup() -> None:
     await ws_server.start()
 
     _transport, udp_protocol = await start_udp_receiver(
-        config.UDP_HOST, config.UDP_PORT, queue, layout
+        config.UDP_HOST, config.UDP_PORT, queue, layout, accept_live
     )
+
+    # Dev mode: run a fake ESP32 in-process. It must be listening before the
+    # configurator's startup SET_HOST, since that ACK is what populates the
+    # super-slot layout. Imported here so production never loads the package.
+    if config.SIM_EMBEDDED:
+        from simulator import start_simulator
+        _simulator = await start_simulator(config.SIM_SCENARIO)
+        log.warning("SIMULATOR MODE — talking to a fake ESP32, not real hardware")
 
     configurator.start()
     my_ip = _local_ip()
@@ -264,6 +310,8 @@ async def startup() -> None:
 
 async def shutdown() -> None:
     """Tear down all subsystems cleanly."""
+    global _simulator
+
     if csv_logger.active:
         csv_logger.stop()
     if playback_engine.active:
@@ -275,6 +323,10 @@ async def shutdown() -> None:
 
     if _transport is not None:
         _transport.close()
+
+    if _simulator is not None:
+        await _simulator.stop()
+        _simulator = None
 
     configurator.stop()
     log.info("Orchestrator shut down")

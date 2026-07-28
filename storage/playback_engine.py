@@ -61,7 +61,12 @@ class PlaybackEngine:
         self._task: asyncio.Task | None = None
         self.active = False
 
+        # Cleared to pause the replay loop, set to resume it.
+        self._resume = asyncio.Event()
+        self._resume.set()
+
         # Progress, exposed via GET /api/playback/status.
+        self.paused:    bool       = False
         self.session:   str | None = None
         self.take:      str | None = None
         self.speed:     float      = 1.0
@@ -106,6 +111,8 @@ class PlaybackEngine:
         self.total     = 0
         self.elapsed_s = 0.0
         self.total_s   = 0.0
+        self.paused    = False
+        self._resume.set()
 
         self.active = True
         self._task  = asyncio.ensure_future(
@@ -121,7 +128,21 @@ class PlaybackEngine:
         if self._task and not self._task.done():
             self._task.cancel()
         self.active = False
+        self.paused = False
+        self._resume.set()   # a paused loop must not stay blocked
         log.info("Playback stopped")
+
+    def pause(self) -> None:
+        """Freeze the replay where it is; timing is realigned on resume()."""
+        self.paused = True
+        self._resume.clear()
+        log.info(f"Playback paused at {self.elapsed_s:.1f}s")
+
+    def resume(self) -> None:
+        """Resume a paused replay."""
+        self.paused = False
+        self._resume.set()
+        log.info("Playback resumed")
 
     async def _replay_loop(
         self,
@@ -156,6 +177,14 @@ class PlaybackEngine:
                     if not self.active:
                         break
 
+                    # Deadlines below are absolute (t0_real + …), so a pause has
+                    # to push the time base forward by however long it lasted —
+                    # otherwise the backlog would be replayed in one burst.
+                    if not self._resume.is_set():
+                        t_pause = asyncio.get_event_loop().time()
+                        await self._resume.wait()
+                        t0_real += asyncio.get_event_loop().time() - t_pause
+
                     elapsed_csv_s = (int(row["ts_esp_us"]) - t0_csv) / 1e6
                     target_real   = t0_real + elapsed_csv_s / speed
                     wait          = target_real - asyncio.get_event_loop().time()
@@ -180,6 +209,8 @@ class PlaybackEngine:
         finally:
             await queue.put(SENTINEL)
             self.active = False
+            self.paused = False
+            self._resume.set()
 
     @staticmethod
     def _row_to_packet(row: dict) -> dict | None:

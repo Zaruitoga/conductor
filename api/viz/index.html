@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Conductor — Visualisation 3D</title>
+  <link rel="stylesheet" href="viz.css">
+</head>
+<body>
+  <div id="layout">
+
+    <!-- Panneau gauche : connexion + lecture -->
+    <aside id="side">
+      <header id="side-header">
+        <h1>Visualisation</h1>
+        <a href="/" class="link">← Panneau de contrôle</a>
+      </header>
+
+      <section class="block">
+        <h2>Connexion</h2>
+        <div class="line">
+          <span id="stream-dot" class="dot"></span>
+          <span id="stream-text" class="muted">flux 3D…</span>
+        </div>
+        <div class="line">
+          <span id="panel-dot" class="dot"></span>
+          <span id="panel-text" class="muted">état…</span>
+        </div>
+        <div class="line">
+          <span id="health-dot" class="dot"></span>
+          <span id="health-text" class="muted">ESP…</span>
+        </div>
+      </section>
+
+      <section class="block">
+        <h2>Vue</h2>
+        <div class="line">
+          <label><input id="follow" type="checkbox" checked> Suivre la roue</label>
+        </div>
+        <div class="line">
+          <button id="recenter">Recentrer</button>
+        </div>
+      </section>
+
+      <section class="block">
+        <h2>Session</h2>
+        <div id="session-info" class="muted">—</div>
+      </section>
+
+      <section class="block">
+        <h2>Lecture</h2>
+        <div class="line">
+          <select id="pb-session"></select>
+          <button id="pb-refresh" title="Rafraîchir">↻</button>
+        </div>
+        <div class="line">
+          <select id="pb-take"></select>
+        </div>
+        <div id="pb-take-meta" class="muted small"></div>
+        <div class="line">
+          <label>Vitesse <input id="pb-speed" type="number" value="1" min="0.1" step="0.1"></label>
+          <label><input id="pb-loop" type="checkbox"> Boucle</label>
+        </div>
+        <div class="line">
+          <button id="pb-start">Lire</button>
+          <button id="pb-pause">Pause</button>
+          <button id="pb-stop" class="danger">Stop</button>
+        </div>
+        <div class="progress"><div id="pb-bar" class="progress-bar"></div></div>
+        <div id="pb-status" class="muted small">Inactif.</div>
+        <div id="pb-error" class="error small"></div>
+      </section>
+    </aside>
+
+    <!-- Panneau droit : scène Three.js -->
+    <main id="stage">
+      <div id="canvas-container"></div>
+      <div id="hud">
+        <div id="hud-rate">—</div>
+        <div id="hud-pos">P: —</div>
+        <div id="hud-quat">Q: —</div>
+      </div>
+    </main>
+
+  </div>
+
+  <script type="module" src="viz.js"></script>
+</body>
+</html>

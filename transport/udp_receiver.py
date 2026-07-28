@@ -4,10 +4,15 @@ transport/udp_receiver.py — UDP endpoint for BNO08x sensor data.
 Receives datagrams from the ESP32, parses them via `protocol.parse_packet`,
 and pushes valid packets onto the central asyncio Queue.  The wire format
 itself lives in `transport/protocol.py`; this module is pure socket I/O.
+
+Admission: an optional `accept` predicate decides whether a parsed packet is
+enqueued.  The receiver holds no policy of its own — core supplies the callable
+(it is what mutes live input while a replay owns the pipeline).
 """
 
 import asyncio
 import logging
+from typing import Callable
 
 from transport.super_layout import SuperSlotLayout
 from transport.protocol import parse_packet
@@ -19,7 +24,8 @@ class UDPReceiver(asyncio.DatagramProtocol):
     """
     asyncio UDP protocol.
 
-    Each valid packet is placed on `queue` for downstream processing.
+    Each valid packet is placed on `queue` for downstream processing, unless the
+    `accept` predicate rejects it (counted in stats["muted"]).
     Tracks the last source IP so the configurator can auto-detect the ESP address.
     A shared SuperSlotLayout is used to decode super-slot payloads into named fields.
     """
@@ -28,10 +34,12 @@ class UDPReceiver(asyncio.DatagramProtocol):
         self,
         queue: asyncio.Queue,
         layout: SuperSlotLayout | None = None,
+        accept: Callable[[dict], bool] | None = None,
     ):
         self.queue         = queue
         self.layout        = layout
-        self.stats         = {"rx": 0, "errors": 0}
+        self.accept        = accept
+        self.stats         = {"rx": 0, "errors": 0, "muted": 0}
         self.last_esp_ip: str | None = None
 
     def connection_made(self, transport):
@@ -44,6 +52,12 @@ class UDPReceiver(asyncio.DatagramProtocol):
         packet = parse_packet(data, self.layout)
         if packet is None:
             self.stats["errors"] += 1
+            return
+
+        # last_esp_ip is set above, before this gate: muting live data must not
+        # stop log_stats from self-healing the ESP config target.
+        if self.accept is not None and not self.accept(packet):
+            self.stats["muted"] += 1
             return
 
         try:
@@ -63,16 +77,18 @@ async def start_udp_receiver(
     port: int,
     queue: asyncio.Queue,
     layout: SuperSlotLayout | None = None,
+    accept: Callable[[dict], bool] | None = None,
 ):
     """
     Create and bind the UDP endpoint. Returns (transport, protocol).
 
     Pass the shared SuperSlotLayout so that super-slot packets are decoded
     into named fields as soon as the layout is populated by EspConfigurator.
+    `accept` is an optional admission predicate applied to each parsed packet.
     """
     loop = asyncio.get_running_loop()
     transport, protocol = await loop.create_datagram_endpoint(
-        lambda: UDPReceiver(queue, layout),
+        lambda: UDPReceiver(queue, layout, accept),
         local_addr=(host, port),
     )
     log.info(f"UDP listening on {host}:{port}")

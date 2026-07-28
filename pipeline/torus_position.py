@@ -31,7 +31,7 @@ from scipy.spatial.transform import Rotation
 import logging
 
 from .base import PipelineStage
-from config import R_TORE, r_TORE, DEGENERATE_THRESHOLD
+from config import R_TORE, r_TORE, DEGENERATE_THRESHOLD, MAX_DT_S
 
 log = logging.getLogger("torus_position")
 
@@ -70,8 +70,8 @@ class TorusPositionStage(PipelineStage):
             return None
 
         dt = self._compute_dt(packet["ts_esp_us"])
-        if dt is None or dt <= 0:
-            return None     # first packet or inconsistent dt — drop
+        if dt is None:
+            return None     # first packet or unusable dt — drop
 
         omega_local = [packet["gyro_x"],    packet["gyro_y"],    packet["gyro_z"]]
         # scipy quaternion convention: [qx, qy, qz, qw]
@@ -97,12 +97,23 @@ class TorusPositionStage(PipelineStage):
         log.info("TorusPositionStage reset")
 
     def _compute_dt(self, ts_esp_us: int) -> float | None:
-        """Return elapsed time in seconds since the last packet, or None on first call."""
+        """
+        Elapsed seconds since the previous packet, or None when unusable.
+
+        None means "don't integrate this one": the first packet, or a dt that is
+        not real elapsed time — negative (ESP reboot, or a packet arriving from
+        the other time base around a live↔replay switch) or longer than
+        MAX_DT_S.  The reference is advanced either way, so the *next* packet
+        resynchronises on the new time base instead of inheriting the gap.
+        """
         if self._last_ts_esp_us is None:
             self._last_ts_esp_us = ts_esp_us
             return None
         dt = (ts_esp_us - self._last_ts_esp_us) / 1e6
         self._last_ts_esp_us = ts_esp_us
+        if dt <= 0 or dt > MAX_DT_S:
+            log.warning(f"Time-base discontinuity (dt={dt:.3f}s) — packet not integrated")
+            return None
         return dt
 
     def _compute_position(

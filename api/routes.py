@@ -12,6 +12,7 @@ import time
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
+import config
 import core
 from api.models import (
     HostConfig, SimpleSlotConfig, SuperSlotConfig,
@@ -37,6 +38,20 @@ async def panel_ws(ws: WebSocket) -> None:
             await asyncio.sleep(_WS_PUSH_INTERVAL)
     except WebSocketDisconnect:
         pass
+
+
+@router.get("/config")
+async def get_config() -> dict:
+    """
+    Static constants external clients need to configure themselves.
+
+    Used by the 3D visualiser (/viz/) so it hardcodes neither the downstream
+    stream port nor the torus geometry.
+    """
+    return {
+        "ws_port":  config.WS_PORT,
+        "geometry": {"R_TORE": config.R_TORE, "r_TORE": config.r_TORE},
+    }
 
 
 @router.get("/status")
@@ -232,6 +247,22 @@ async def playback_stop() -> dict:
         raise HTTPException(409, "No active playback")
     core.playback_engine.stop()
     return {"active": False}
+
+
+@router.post("/playback/pause")
+async def playback_pause() -> dict:
+    if not core.playback_engine.active:
+        raise HTTPException(409, "No active playback")
+    core.playback_engine.pause()
+    return {"active": True, "paused": True}
+
+
+@router.post("/playback/resume")
+async def playback_resume() -> dict:
+    if not core.playback_engine.active:
+        raise HTTPException(409, "No active playback")
+    core.playback_engine.resume()
+    return {"active": True, "paused": False}
 
 
 @router.get("/playback/status")
