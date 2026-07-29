@@ -1,8 +1,8 @@
 // viz.js — 3D visualiser served at /viz/.
 //
 // Two channels, two roles:
-//   • the downstream packet stream (WS_PORT, see GET /api/config) drives the
-//     wheel: only `type: "computed"` packets carry px/py/pz + game_rv_q*;
+//   • the downstream stream (WS_PORT, see GET /api/config) drives the wheel:
+//     `type: "frame"` messages carry the model's pose and signals;
 //   • the panel snapshot (/api/ws, ~4 Hz) drives observation and playback state.
 // Commands stay REST, exactly like the control panel.
 
@@ -179,9 +179,10 @@ function setDot(id, cls, textId, text) {
 // ── Channel 1: packet stream (wheel motion) ─────────────────────────────────
 const wsProto = location.protocol === "https:" ? "wss" : "ws";
 
-// ?types=computed — the wheel only needs computed packets, and the server would
-// otherwise also send gyro/game_rv/super_0/heartbeat: 4× the messages to parse.
-connect(`${wsProto}://${location.hostname}:${cfg.ws_port}/?types=computed`, {
+// ?types=frame — the wheel only needs the model's frames, and the server would
+// otherwise also send gyro/game_rv/super_0/heartbeat: several times the messages
+// to parse for nothing.
+connect(`${wsProto}://${location.hostname}:${cfg.ws_port}/?types=frame`, {
   onOpen: () => setDot("stream-dot", "ok", "stream-text",
                        `flux 3D — port ${cfg.ws_port}`),
   onClose: () => {
@@ -192,14 +193,23 @@ connect(`${wsProto}://${location.hostname}:${cfg.ws_port}/?types=computed`, {
   onMessage: (ev) => {
     let d;
     try { d = JSON.parse(ev.data); } catch { return; }
-    // NB: typeId 5 is ambiguous (it is also RV) — only `type` disambiguates.
-    if (d.type !== "computed") return;
-    sampleQ.set(d.game_rv_qx, d.game_rv_qy, d.game_rv_qz, d.game_rv_qw);
-    sampleP.set(d.px, d.py, d.pz);
-    hasSample = true;
+    if (d.type !== "frame") return;
     packetCount++;
+
+    // `pose` is the geometric state, always present in a frame — as opposed to
+    // `signals`, whose contents depend on how the ESP is configured. Position
+    // is null until the model has an angular velocity to integrate, so a wheel
+    // configured without a gyro still renders its orientation.
+    const p = d.pose;
+    if (!p || p.qw === undefined) return;
+    sampleQ.set(p.qx, p.qy, p.qz, p.qw);
+    sampleP.set(p.x ?? 0, p.y ?? 0, p.z ?? 0);
+    latestSignals = d.signals || {};
+    hasSample = true;
   },
 });
+
+let latestSignals = {};
 
 // ── Channel 2: panel snapshot (health, session, playback) ───────────────────
 connect(`${wsProto}://${location.host}/api/ws`, {
@@ -223,8 +233,10 @@ const HEALTH_DOT = { online: "ok", degraded: "warn", offline: "bad" };
 function renderHealth(h) {
   if (!h) return;
   const bits = [`ESP ${h.state}`];
-  if (h.telemetry && typeof h.telemetry.battery_pct === "number") {
-    bits.push(`${h.telemetry.battery_pct.toFixed(0)}%`);
+  // The block is named `heartbeat` (see EspHealth.snapshot); this used to read
+  // `h.telemetry`, so the battery never appeared here.
+  if (h.heartbeat && typeof h.heartbeat.battery_pct === "number") {
+    bits.push(`${h.heartbeat.battery_pct.toFixed(0)} %`);
   }
   setDot("health-dot", HEALTH_DOT[h.state] || "", "health-text", bits.join(" · "));
 }
@@ -266,18 +278,27 @@ setInterval(() => {
   const fps = Math.round(frameCount / elapsed);
   packetCount = 0;
   frameCount = 0;
-  $("hud-rate").textContent = `${rateHz} Hz (computed) · ${fps} fps`;
+  $("hud-rate").textContent = `${rateHz} Hz (frames) · ${fps} fps`;
   if (hasSample) {
     $("hud-pos").textContent =
       `P: x ${sampleP.x.toFixed(3)}  y ${sampleP.y.toFixed(3)}  z ${sampleP.z.toFixed(3)}`;
-    $("hud-quat").textContent =
-      `Q: ${sampleQ.w.toFixed(3)} ${sampleQ.x.toFixed(3)} ` +
-      `${sampleQ.y.toFixed(3)} ${sampleQ.z.toFixed(3)}`;
+    // A couple of signals worth seeing while the wheel is moving. Which ones
+    // exist depends on the ESP configuration, so each is shown only if present.
+    $("hud-quat").textContent = [
+      fmtSignal("lean_deg", "incl", "°"),
+      fmtSignal("speed_ms", "v", " m/s"),
+      fmtSignal("spin_rate_dps", "ω", "°/s"),
+    ].filter(Boolean).join("   ") || "—";
   } else {
     $("hud-pos").textContent = "P: —";
     $("hud-quat").textContent = "Q: —";
   }
 }, 1000);
+
+function fmtSignal(name, label, unit) {
+  const v = latestSignals[name];
+  return typeof v === "number" ? `${label} ${v.toFixed(1)}${unit}` : "";
+}
 
 // ── Playback controls (REST; the engine has no seek, hence no scrubbing) ────
 const takeDuration = (t) =>

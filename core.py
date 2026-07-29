@@ -26,7 +26,9 @@ from transport.ws_server        import WSServer
 from transport.live_monitor     import LiveMonitor
 from transport.esp_health        import EspHealth
 from transport.protocol         import HB_TYPE
-from pipeline.torus_position    import TorusPositionStage
+from model.bus                  import ModelBus
+from model.engine               import Model
+from model.types                import RAW
 from storage.session_manager    import SessionManager
 from storage.csv_logger         import CSVLogger
 from storage.playback_engine    import PlaybackEngine
@@ -50,12 +52,34 @@ def _local_ip() -> str:
 # Shared layout — written by EspConfigurator, read by UDPReceiver's parser
 layout = SuperSlotLayout()
 
-# Pipeline stages — executed in order for every received packet.
-# Add a new stage here and create its module under pipeline/.
-PIPELINE_STAGES = [
-    TorusPositionStage(),
-    # CalibrationStage(),   ← iteration 4
-]
+# The single fan-out point between what we compute and every output. The WS
+# server is one subscriber; the scope ring, the event log and (later) the OSC
+# bridge are others. Nothing downstream is privileged.
+bus = ModelBus()
+
+# The interpretation layer. It publishes frames (and later events) on the bus
+# itself, so processing_loop only has to hand it packets. Signals are declared
+# in model/signals/ — adding one there is the whole wiring.
+model: Model  # assigned below, once `configurator` exists to read the ESP state from
+
+# The most recent frame, kept for the 4 Hz panel push. Fed by the bus rather
+# than by processing_loop, so the panel is a subscriber like anything else and
+# the model never has to know it exists.
+latest_frame = None
+
+
+def _remember_frame(kind: str, frame) -> None:
+    global latest_frame
+    latest_frame = frame
+
+
+bus.subscribe_sync("panel", ("frame",), _remember_frame)
+
+# Failures of the engine itself, as opposed to of a single signal (which the
+# registry contains). Should stay at zero; if it does not, the model is frozen
+# and the panel must say so rather than showing a plausible stale frame.
+model_errors = {"count": 0, "last": None}
+_MODEL_LOG_EVERY = 200
 
 session_manager = SessionManager()
 csv_logger      = CSVLogger(session_manager)
@@ -78,6 +102,12 @@ esp_health = EspHealth(
     monitor, configurator,
     heartbeat_timeout_s = config.HEARTBEAT_TIMEOUT_S,
     rate_tolerance      = config.RATE_TOLERANCE,
+)
+
+model = Model(
+    bus,
+    max_gap_us = int(config.MAX_DT_S * 1e6),
+    esp_state  = lambda: configurator.state,
 )
 
 # Runtime handles — populated by startup(), referenced by the API routes.
@@ -106,14 +136,25 @@ def accept_live(packet: dict) -> bool:
     return not playback_engine.active or packet.get("typeId") == HB_TYPE
 
 
-async def processing_loop(q: asyncio.Queue, ws: WSServer) -> None:
+async def processing_loop(q: asyncio.Queue) -> None:
     """
     Main packet consumer loop.
 
+    Publishes through the module-level `bus`, the same one the model was built
+    with. Taking it as an argument invited two references to the one fan-out
+    point, which is one too many.
+
     For each packet dequeued:
-      1. Observe it (live metrics) and write to CSV (raw, before pipeline)
-      2. Run through all pipeline stages (a None result drops the packet)
-      3. Observe computed output, then broadcast the enriched packet over WS
+      1. Observe it (live metrics) and write to CSV — raw, before the model, so
+         the recording never depends on the computation model of the day
+      2. Publish the raw packet: it is the wire, and clients may want it
+      3. Feed the model, which publishes its own frame when the packet produced
+         a tick
+
+    Nothing here can drop a packet.  The model contains its own failures at the
+    node (see model/registry.py), so a broken detector costs its own value and
+    never the stream — which used to be false, and is the difference between one
+    dead signal and a stuttering visual during a show.
     """
     log.info("Processing loop started")
     while True:
@@ -121,32 +162,32 @@ async def processing_loop(q: asyncio.Queue, ws: WSServer) -> None:
 
         if packet.get("typeId") == "playback_end":
             # Reset here, not in PlaybackEngine: the sentinel is the point in the
-            # *stream* where the replay ends, so stateful stages are cleared
-            # before the live packets queued behind it are integrated. Resetting
-            # only at the start of a replay pass (as PlaybackEngine does) would
-            # leave the take's final px/py as the live mode's starting offset.
+            # *stream* where the replay ends, so state is cleared before the live
+            # packets queued behind it are integrated. Resetting only at the
+            # start of a replay pass would leave the take's final position as
+            # live mode's starting offset.
             log.info("Playback session ended — returning to IDLE")
-            for stage in PIPELINE_STAGES:
-                await stage.reset()
+            model.reset()
             q.task_done()
             continue
 
         monitor.observe(packet)
         csv_logger.write(packet)
+        bus.publish(RAW, packet)
 
-        for stage in PIPELINE_STAGES:
-            if packet is None:
-                break
-            try:
-                packet = await stage.process(packet)
-            except Exception as e:
-                log.error(f"Error in {stage.__class__.__name__}: {e}")
-                packet = None
-
-        if packet is not None:
-            if "px" in packet:           # computed torus-position output
-                monitor.observe(packet)
-            await ws.broadcast(packet)
+        try:
+            model.feed(packet)
+        except Exception as e:
+            # The registry already contains a failing *node*, so reaching here
+            # means the engine or the resolver itself broke. Letting it escape
+            # would kill this task, and with it the only consumer of the queue —
+            # the orchestrator would go silently deaf. Recording and the raw
+            # stream above are already done, so a show carries on with a frozen
+            # model rather than no data at all.
+            n = model_errors["count"] = model_errors["count"] + 1
+            model_errors["last"] = str(e)
+            if n % _MODEL_LOG_EVERY == 1:
+                log.exception(f"Model.feed raised ({n} so far)")
 
         q.task_done()
 
@@ -169,10 +210,11 @@ async def log_stats(interval: float, q: asyncio.Queue, udp_proto, ws: WSServer) 
                 await asyncio.to_thread(configurator.set_host, _local_ip())
 
         mode = "REC" if csv_logger.active else ("PLAY" if playback_engine.active else "IDLE")
+        w = ws.snapshot()
         log.info(
             f"[{mode}]  Queue:{q.qsize()}  "
             f"UDP rx:{udp_proto.stats['rx']} err:{udp_proto.stats['errors']}  "
-            f"WS tx:{ws.stats['tx']} clients:{len(ws.clients)}"
+            f"WS tx:{w['tx']} clients:{w['clients']} dropped:{w['dropped']}"
         )
 
 
@@ -201,19 +243,20 @@ def status_dict() -> dict:
             "muted":       udp_protocol.stats["muted"]  if udp_protocol else 0,
             "last_esp_ip": udp_protocol.last_esp_ip     if udp_protocol else None,
         },
-        "ws": {
-            "tx":      ws_server.stats["tx"]   if ws_server else 0,
-            "clients": len(ws_server.clients) if ws_server else 0,
-            # Packets dropped for a client that could not keep up (drop-oldest
-            # fan-out). Non-zero means a downstream viewer is lagging — the
-            # pipeline itself is never held back for it.
-            "dropped": ws_server.stats["dropped"] if ws_server else 0,
+        # Packets dropped for a client that could not keep up (drop-oldest
+        # fan-out). Non-zero means a downstream viewer is lagging — the pipeline
+        # itself is never held back for it. `forced` counts events discarded
+        # anyway, which is never acceptable and should stay at zero.
+        "ws": ws_server.snapshot() if ws_server else {
+            "clients": 0, "tx": 0, "errors": 0,
+            "dropped": 0, "forced": 0, "backlog": 0,
         },
         "esp_net": {
             "hostname": configurator.hostname,
             "ip":       configurator.esp_ip,
             "resolved": configurator.resolved,
         },
+        "bus": bus.stats(),
     }
 
 
@@ -252,6 +295,25 @@ def playback_dict() -> dict:
     }
 
 
+def model_dict() -> dict:
+    """
+    Model state for the panel: runtime counters plus the latest frame.
+
+    The frame carries the current value of every available signal.  It is a
+    convenience for the 4 Hz panel, not the way to watch a signal: at 4 Hz you
+    see one sample in twenty-five, which is useless for setting a threshold.
+    That is what the scope's history endpoint is for.
+    """
+    frame = latest_frame
+    return {
+        **model.snapshot(),
+        "pose":    frame.pose if frame else None,
+        "signals": frame.signals if frame else {},
+        "quality": frame.quality if frame else None,
+        "engine_errors": dict(model_errors),
+    }
+
+
 def panel_snapshot() -> dict:
     """Full observation snapshot pushed to the control panel over WS."""
     return {
@@ -262,6 +324,7 @@ def panel_snapshot() -> dict:
         "recording": recording_dict(),
         "playback":  playback_dict(),
         "esp":       configurator.state,
+        "model":     model_dict(),
     }
 
 
@@ -273,6 +336,7 @@ async def startup() -> None:
 
     ws_server = WSServer(config.WS_HOST, config.WS_PORT)
     await ws_server.start()
+    ws_server.attach(bus)
 
     _transport, udp_protocol = await start_udp_receiver(
         config.UDP_HOST, config.UDP_PORT, queue, layout, accept_live
@@ -302,7 +366,7 @@ async def startup() -> None:
             "will adopt its address from incoming sensor data."
         )
 
-    _tasks.append(asyncio.ensure_future(processing_loop(queue, ws_server)))
+    _tasks.append(asyncio.ensure_future(processing_loop(queue)))
     _tasks.append(asyncio.ensure_future(log_stats(30.0, queue, udp_protocol, ws_server)))
 
     log.info("Orchestrator ready")
@@ -320,6 +384,8 @@ async def shutdown() -> None:
     for task in _tasks:
         task.cancel()
     _tasks.clear()
+
+    await bus.close()
 
     if _transport is not None:
         _transport.close()

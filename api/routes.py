@@ -17,6 +17,7 @@ import core
 from api.models import (
     HostConfig, SimpleSlotConfig, SuperSlotConfig,
     SessionCreate, SessionUpdate, TakeStart, TakeUpdate, PlaybackRequest,
+    ParamUpdate, ProfileRequest, SignalToggle,
 )
 
 router = APIRouter(prefix="/api")
@@ -43,14 +44,20 @@ async def panel_ws(ws: WebSocket) -> None:
 @router.get("/config")
 async def get_config() -> dict:
     """
-    Static constants external clients need to configure themselves.
+    What external clients need to configure themselves.
 
     Used by the 3D visualiser (/viz/) so it hardcodes neither the downstream
-    stream port nor the torus geometry.
+    stream port nor the wheel dimensions.  The geometry comes from the live
+    parameters rather than from config.py: swapping wheels between two takes
+    changes the model's numbers, and a visualiser drawing the old diameter would
+    quietly disagree with the position it is rendering.
     """
     return {
         "ws_port":  config.WS_PORT,
-        "geometry": {"R_TORE": config.R_TORE, "r_TORE": config.r_TORE},
+        "geometry": {
+            "R_TORE": core.model.params.get("wheel_R_m"),
+            "r_TORE": core.model.params.get("wheel_r_m"),
+        },
     }
 
 
@@ -76,6 +83,91 @@ async def get_health() -> dict:
 async def get_session() -> dict:
     """Active session meta (REST fallback for the WS push)."""
     return {"session": core.session_dict()}
+
+
+# ── Model: schema, parameters, signal switches ────────────────────────────
+# The schema is what the panel builds itself from, so a signal declared in
+# model/signals/ appears in the UI with no frontend change at all.
+
+@router.get("/model/schema")
+async def model_schema() -> dict:
+    """
+    Every declared signal and parameter, plus what the ESP is actually feeding.
+
+    `quantities.configured` and `quantities.observed` differ when the ESP was
+    told to send something that is not arriving — a distinct fault from never
+    having asked for it, and the panel says which.
+    """
+    return core.model.schema()
+
+
+@router.get("/model")
+async def model_state() -> dict:
+    """Model runtime state with the latest frame (REST fallback for the push)."""
+    return core.model_dict()
+
+
+@router.get("/model/params")
+async def get_params() -> dict:
+    return core.model.params.snapshot()
+
+
+@router.patch("/model/params")
+async def set_params(req: ParamUpdate) -> dict:
+    """
+    Change tuning values live. Takes effect on the next tick, never mid-tick.
+
+    Clamped to the bounds each parameter declared, so a slider or a typo cannot
+    put the model in a state its author never considered.
+    """
+    try:
+        applied = core.model.params.update(req.values)
+    except KeyError as e:
+        raise HTTPException(400, str(e))
+    return {"applied": applied, "revision": core.model.params.revision}
+
+
+@router.post("/model/params/reset")
+async def reset_params() -> dict:
+    core.model.params.reset_to_defaults()
+    return core.model.params.snapshot()
+
+
+@router.post("/model/params/save")
+async def save_profile(req: ProfileRequest) -> dict:
+    core.model.params.save_profile(req.name)
+    return core.model.params.snapshot()
+
+
+@router.post("/model/params/load")
+async def load_profile(req: ProfileRequest) -> dict:
+    try:
+        core.model.params.load_profile(req.name)
+    except FileNotFoundError:
+        raise HTTPException(404, f"Profil introuvable : {req.name}")
+    return core.model.params.snapshot()
+
+
+@router.post("/model/signal")
+async def toggle_signal(req: SignalToggle) -> dict:
+    """
+    Switch a signal off or back on.
+
+    Its dependents follow automatically — the schema reports them as
+    "dépend de <name>" rather than silently producing nulls.
+    """
+    try:
+        core.model.registry.set_enabled(req.name, req.enabled)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    return {"name": req.name, "enabled": req.enabled}
+
+
+@router.post("/model/reset")
+async def reset_model() -> dict:
+    """Clear every integrator and envelope — notably the drifting position."""
+    core.model.reset()
+    return {"reset": True}
 
 
 # ── ESP control ───────────────────────────────────────────────────────────
@@ -235,7 +327,7 @@ async def playback_start(req: PlaybackRequest) -> dict:
     if not os.path.exists(sm.csv_path(sm.take_path(req.session, req.take))):
         raise HTTPException(404, f"Take not found: {req.session}/{req.take}")
     await core.playback_engine.start(
-        req.session, req.take, core.queue, core.PIPELINE_STAGES, req.speed, req.loop
+        req.session, req.take, core.queue, core.model.reset, req.speed, req.loop
     )
     return {"active": True, "session": req.session, "take": req.take,
             "speed": req.speed, "loop": req.loop}

@@ -1,6 +1,8 @@
-// ── Live data: torus position + per-sensor value cards ──────────────────────
-// Fed by transport/live_monitor.py (LiveMonitor.snapshot): rates, latest
-// payload per type, and the computed torus position.
+// ── Live data: wheel position + per-sensor value cards ──────────────────────
+// Two sources, deliberately: the sensor cards come from transport/live_monitor.py
+// (what is arriving on the wire), the position from the model's latest frame
+// (what we make of it). Keeping them apart is why a computed value can no longer
+// masquerade as an incoming stream.
 
 import {
   $, h, setText, setClass, setHidden, keyed,
@@ -8,9 +10,8 @@ import {
 } from "../dom.js";
 import { on, historyOf } from "../store.js";
 
-// `computed` carries the pipeline output (shown as torus tiles) and
-// `heartbeat` is telemetry (shown in the health panel) — neither is a sensor.
-const NOT_A_SENSOR = new Set(["heartbeat", "computed"]);
+// Telemetry, shown in the health panel — not a sensor stream.
+const NOT_A_SENSOR = new Set(["heartbeat"]);
 
 function createSensor() {
   const spark = makeSpark(64, 18);
@@ -41,19 +42,24 @@ function updateSensor(node, s) {
   });
 }
 
-function renderTorus(torus) {
+function renderPose(pose) {
   for (const axis of ["x", "y", "z"]) {
     const el = $("torus-" + axis);
-    setText(el, torus ? fmtNum(torus["p" + axis], 3) : "—");
-    setClass(el.parentElement, "tile tile--lg" + (torus ? "" : " tile--empty"));
+    const v = pose ? pose[axis] : null;
+    setText(el, typeof v === "number" ? fmtNum(v, 3) : "—");
+    setClass(el.parentElement,
+      "tile tile--lg" + (typeof v === "number" ? "" : " tile--empty"));
   }
 }
 
 export function initLive() {
+  on("model", (model) => {
+    if (!model) return;
+    renderPose(model.pose);
+  });
+
   on("live", (live) => {
     if (!live) return;
-
-    renderTorus(live.torus);
 
     const badge = $("live-badge");
     setText(badge, live.connected ? "flux actif" : "aucun flux");

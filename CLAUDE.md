@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`conductor` is a Python asyncio orchestrator for a Cyr-wheel IMU project. It receives BNO08x sensor data from an ESP32 over UDP, runs each packet through a processing pipeline (currently computing the 3D torus-centre position via a no-slip rolling model), and broadcasts the enriched packets over WebSocket to downstream clients (Three.js visualiser, Ableton, etc.). It can record sessions to CSV and replay them as if they were live.
+`conductor` is a Python asyncio orchestrator for a Cyr-wheel IMU project. It receives BNO08x sensor data from an ESP32 over UDP, interprets it into artistic signals (geometry, dynamics, and later events and states), and publishes the result to downstream outputs (Three.js visualiser, later OSC to Ableton, lighting). It can record sessions to CSV and replay them as if they were live.
+
+The chain is **movement → meaningful signal → creative output**, and the middle link — the `model/` package — is where the value is. Everything else exists to feed it reliably or to carry its output.
 
 ## Running
 
@@ -12,7 +14,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 python3 main.py        # launches uvicorn → FastAPI control panel + REST API on API_PORT (8000)
 ```
 
-The FastAPI lifespan boots all orchestrator subsystems (UDP receiver, WS server, ESP configurator, processing loop). Open `http://localhost:8000/` for the web control panel. There is no requirements file, build, lint, or test setup. Dependencies are installed ad hoc:
+The FastAPI lifespan boots all orchestrator subsystems (UDP receiver, WS server, ESP configurator, processing loop). Open `http://localhost:8000/` for the web control panel. There is no requirements file, build or lint setup. Dependencies are installed ad hoc:
 
 ```bash
 pip install numpy scipy websockets fastapi "uvicorn[standard]"   # stdlib: asyncio, struct, socket, csv, json
@@ -20,11 +22,25 @@ pip install numpy scipy websockets fastapi "uvicorn[standard]"   # stdlib: async
 
 Requires Python 3.12+ (uses `X | None` union syntax and modern type hints).
 
+### Tests
+
+There is no pytest in this environment, so `tests/` is dependency-free: each module exposes `main()` and asserts its way through.
+
+```bash
+python3 -m tests.run
+```
+
+The suite is fast (~2 s) and covers the properties that are expensive to discover late: the 32-bit clock rollover, the bus loss policies, the WebSocket outbox priority, the processing loop's survival, and the model checked against `simulator/motion.py`'s closed forms. **`test_model.py` is the one to extend when adding a signal** — the simulator prescribes attitude analytically and derives the gyro from that same attitude, so its `reference()` is a genuine external check rather than the model grading its own homework.
+
 ### Control interface (REST API + web panel)
 
 Control (ESP config, sessions, recording, playback) is exposed as a REST API under `/api/...` (see `api/routes.py`) and a vanilla HTML/JS panel served from `api/static/`. This replaced the old stdin keyboard interface. **Commands** are REST: ESP control (`POST /api/esp/host|simple|super`, `DELETE /api/esp/super/{slot}`), session lifecycle (`POST /api/session/start|close`, `PATCH /api/session`), take recording (`POST /api/recording/start|stop|marker`), take editing (`PATCH /api/sessions/{session}/takes/{take}`), playback (`GET /api/sessions`, `POST /api/playback/start|stop` with `{session, take, speed, loop}`).
 
-**Observation is hybrid push/poll** (see `core.panel_snapshot`). The panel's primary channel is a **native FastAPI WebSocket at `/api/ws`** (`panel_ws` in `routes.py`, one push loop per client at ~4 Hz) that sends a merged snapshot: `{status, live, health, session, recording, playback, esp}`. The same per-section dicts are also exposed as REST GETs (`/api/status`, `/api/live`, `/api/health`, `/api/session`, `/api/recording/status`, `/api/playback/status`) which the frontend uses only as a **fallback** when the socket drops (`js/store.js` `startFallback`). All snapshot builders live in `core.py` (`status_dict`/`session_dict`/`recording_dict`/`playback_dict`/`panel_snapshot`) — single source of truth. Stream observation (per-type rates, liveness, latest values) is done backend-side by `LiveMonitor` (`transport/live_monitor.py`), fed from `processing_loop`.
+**Observation is hybrid push/poll** (see `core.panel_snapshot`). The panel's primary channel is a **native FastAPI WebSocket at `/api/ws`** (`panel_ws` in `routes.py`, one push loop per client at ~4 Hz) that sends a merged snapshot: `{status, live, health, session, recording, playback, esp, model}`. The same per-section dicts are also exposed as REST GETs (`/api/status`, `/api/live`, `/api/health`, `/api/session`, `/api/recording/status`, `/api/playback/status`, `/api/model`) which the frontend uses only as a **fallback** when the socket drops (`js/store.js` `startFallback`). All snapshot builders live in `core.py` (`status_dict`/`session_dict`/`recording_dict`/`playback_dict`/`model_dict`/`panel_snapshot`) — single source of truth. Stream observation (per-type rates, liveness, latest values) is done backend-side by `LiveMonitor` (`transport/live_monitor.py`), fed from `processing_loop`. `LiveMonitor` watches **the wire and only the wire**; anything derived belongs to the model, which keeps its own state.
+
+The 4 Hz snapshot carries the model's latest frame as a convenience, **not as a way to watch a signal**: at 4 Hz you see one sample in twenty-five, which is useless for setting a threshold. A scope with a full-rate backend history is the next piece to build.
+
+**Model control is REST too**: `GET /api/model/schema` (every declared signal with its unit, range, dependencies and availability, plus every parameter), `GET|PATCH /api/model/params`, `POST /api/model/params/{save,load,reset}`, `POST /api/model/signal` (enable/disable one node), `POST /api/model/reset` (clear integrators).
 
 **ESP health is unified** (`transport/esp_health.py`, `EspHealth`, snapshot key `health`). Single source of "is the ESP alive and behaving", fusing two signals so the UI shows one verdict (`online`/`degraded`/`offline`) instead of redundant indicators: (1) **presence + telemetry** from the periodic heartbeat packet (no heartbeat for `config.HEARTBEAT_TIMEOUT_S` ⇒ offline, independent of the sensor stream), and (2) **stream conformance** — it cross-checks the measured per-type rates (`LiveMonitor`) against what the configured ESP state (`configurator.state`, last CFG_ACK) says should arrive, flagging `missing`/`slow` streams (tolerance `config.RATE_TOLERANCE`). The panel renders this in one collapsible "ESP — Santé & connexion" card and drives the header status dot from `health.state`.
 
@@ -53,11 +69,11 @@ A **second, independent page** is served from `api/viz/` and mounted at `/viz/` 
 
 It uses **two WebSockets plus REST**:
 
-- `ws://<host>:WS_PORT/?types=computed` (8081) — the downstream packet stream, drives the wheel. Only packets with `type === "computed"` are used: `game_rv_qw/qx/qy/qz` for attitude, `px/py/pz` for position. Discriminate on **`type`, never `typeId`** — the pipeline rewrites `typeId` to 5, which collides with `0x05 = RV` in `protocol.TYPE_NAME`. The `?types=` filter is server-side (see "Key seams"); without it the page would also receive `gyro`/`game_rv`/`super_0`/`heartbeat`, i.e. 4× the messages to `JSON.parse` for nothing.
+- `ws://<host>:WS_PORT/?types=frame` (8081) — the downstream stream, drives the wheel. Only `type === "frame"` messages are used; each carries `pose` (`qw/qx/qy/qz` + `x/y/z`) and `signals`. **`pose` is always present, `signals` depends on the ESP configuration** — hence the null-tolerant read: a wheel configured without a gyro still renders its orientation, it just has no position. The `?types=` filter is server-side (see "Key seams"); without it the page would also receive `gyro`/`game_rv`/`super_0`/`heartbeat`, i.e. several times the messages to `JSON.parse` for nothing.
 - `/api/ws` — the same 4 Hz panel snapshot as the control panel, for ESP health, active session and playback progress.
 - REST for commands (playback start/pause/resume/stop, `GET /api/sessions`).
 
-Nothing is hardcoded client-side: **`GET /api/config`** returns `{ws_port, geometry: {R_TORE, r_TORE}}` so the page gets the stream port and the torus dimensions from `config.py`. Both sockets reconnect automatically (~1 s). The pipeline frame is Z-up while Three.js is Y-up, hence the `qFix` -90°/X quaternion applied to both attitude and position. Camera-follow is on by default — a rolling wheel leaves the frame within seconds otherwise; the ground grid is snapped to whole `GRID_CELL` (2 m) steps under the wheel so it reads as fixed ground rather than a carpet being dragged along.
+Nothing is hardcoded client-side: **`GET /api/config`** returns `{ws_port, geometry: {R_TORE, r_TORE}}`, where the geometry comes from the **live parameters**, not from `config.py` — swapping wheels changes the model's numbers and a visualiser drawing the old diameter would quietly disagree with the position it renders. Both sockets reconnect automatically (~1 s). The model frame is Z-up while Three.js is Y-up, hence the `qFix` -90°/X quaternion applied to both attitude and position. Camera-follow is on by default — a rolling wheel leaves the frame within seconds otherwise; the ground grid is snapped to whole `GRID_CELL` (2 m) steps under the wheel so it reads as fixed ground rather than a carpet being dragged along.
 
 **Render cost is capped on purpose**: `setPixelRatio(Math.min(devicePixelRatio, 1.5))` and MSAA only below dpr 2. Do not "fix" this back to `devicePixelRatio` — on a Retina screen that is 4× the fragments for a fill-rate-bound scene (full-screen ground + grid), and a saturated main thread stops draining the packet socket in time. The HUD shows packets/s **and** fps precisely so the two failure modes stay distinguishable.
 
@@ -65,35 +81,102 @@ Playback from the viz uses the existing API plus **`POST /api/playback/pause|res
 
 ## Architecture
 
-`main.py` is a thin entry point that launches uvicorn. The real wiring lives in `core.py`, which owns the central `asyncio.Queue` and the shared singletons (`configurator`, `session_manager`, `csv_logger`, `playback_engine`, `layout`, `PIPELINE_STAGES`). `core.startup()` (called from the FastAPI lifespan in `api/app.py`) starts the UDP/WS endpoints and the `processing_loop` + `log_stats` tasks. The API route handlers (`api/routes.py`) import the same singletons from `core` — that shared-singleton module is the single source of truth for runtime state.
+`main.py` is a thin entry point that launches uvicorn. The real wiring lives in `core.py`, which owns the central `asyncio.Queue` and the shared singletons (`bus`, `model`, `configurator`, `session_manager`, `csv_logger`, `playback_engine`, `layout`). `core.startup()` (called from the FastAPI lifespan in `api/app.py`) starts the UDP/WS endpoints and the `processing_loop` + `log_stats` tasks. The API route handlers (`api/routes.py`) import the same singletons from `core` — that shared-singleton module is the single source of truth for runtime state.
 
 Data flow (live):
 ```
-UDPReceiver ──▶ Queue ──▶ processing_loop ──▶ (CSV write) ──▶ pipeline stages ──▶ WSServer.broadcast
-PlaybackEngine ─┘ (replays CSV onto the same Queue — pipeline/WS see no difference from live)
+UDPReceiver ──▶ Queue ──▶ processing_loop ──▶ CSV write (raw, before the model)
+PlaybackEngine ─┘                         └──▶ bus.publish(RAW)
+                                          └──▶ model.feed() ──▶ bus.publish(FRAME | EVENT | META)
+
+bus subscribers:  WSServer (8081)  ·  [scope ring]  ·  [event log]  ·  [OSC bridge, later]
 ```
+
+`PlaybackEngine` replays a CSV onto the same Queue, so the model and every output see no difference from live — "same code live and replayed" is a structural property, not a discipline.
 
 Config flow runs on a **separate port**: `EspConfigurator` talks to the ESP32 on port 4211 (commands + ACK replies), while sensor data arrives on port 4210. WebSocket clients connect on 8081. All ports/IPs live in `config.py`.
 
 ### Key seams
 
-- **`processing_loop` (core.py)** — the single consumer. Feeds each packet to `monitor.observe` (live metrics) and writes it to CSV **before** the pipeline (raw data is preserved independently of the computation model), then runs it through `PIPELINE_STAGES` in order; the computed torus output is observed again before broadcast. A stage returning `None` drops the packet; an exception is caught, logged, and also drops the packet.
+- **`processing_loop` (core.py)** — the single consumer, and **it can never drop a packet**. It observes, writes to CSV **before** the model (raw data is preserved independently of the computation model of the day), publishes the raw packet, then feeds the model. `model.feed` is wrapped: the registry already contains a failing *node*, so an escape there means the engine itself broke, and letting it out would kill the queue's only consumer — the orchestrator would go silently deaf, which during a show is far worse than a wrong number. Counted in `status.model.engine_errors`; should stay at zero.
 
-- **Fan-out never blocks the pipeline (`transport/ws_server.py`).** Each 8081 client owns a small bounded queue (`_CLIENT_QUEUE_SIZE = 8`, ~80 ms at 100 Hz) drained by its own writer task; `broadcast()` only does a non-blocking put and drops the *oldest* pending packet for a client that cannot keep up (counted in `status.ws.dropped`). This is not an optimisation but a correctness property: `broadcast()` used to `await send()` for every client inside `processing_loop`, so one slow browser stalled the whole orchestrator — measured with a single visualiser attached, the central queue grew past 6000 packets and the pipeline fell from ~380 to 186 packets/s, which is what made a paused replay keep playing on screen for seconds. For a real-time view the freshest packet is the one that matters, so dropping beats queueing. Clients may also narrow the stream with `?types=a,b` on the connection URL (no query string ⇒ everything, so existing consumers are untouched); serialisation is lazy, a packet nobody subscribes to is never turned into JSON.
+- **Fan-out never blocks the model (`transport/ws_server.py`).** The WS server is a **bus subscriber**, registered inline (`subscribe_sync`) because its handler only serialises and appends to per-client outboxes. Each client owns an outbox split in two: droppable messages (raw packets, frames — `_LOSSY_BACKLOG = 8`, ~80 ms at 100 Hz) and undroppable ones (events, meta — `_RELIABLE_BACKLOG = 512`). **A flood of frames can never evict a trigger, and the writer drains triggers first**: a saturated client loses smoothness and keeps its events, which is the right trade for a show. Two deques rather than a priority scan, so both directions are O(1).
 
-- **Playback is exclusive over the pipeline.** The queue has two producers, and their `ts_esp_us` come from unrelated time bases (ESP uptime vs. recorded CSV), so interleaving them makes the dt `TorusPositionStage` derives from that field meaningless and its px/py integration diverges. `core.accept_live` is the admission gate: it is handed to `UDPReceiver` as an injected `accept(packet)` predicate (the receiver holds no policy of its own and never imports the engine), and it drops live packets at the socket while `playback_engine.active` — counted in `status.udp.muted`. **The heartbeat (0x20) is exempt**: it is live-only telemetry, never recorded and therefore never replayed, and without it `EspHealth` would declare the ESP offline a few seconds into every replay.
+  This is not an optimisation but a correctness property: `broadcast()` used to `await send()` for every client inside the processing loop, so one slow browser stalled the whole orchestrator — measured with a single visualiser attached, the central queue grew past 6000 packets and the pipeline fell from ~380 to 186 packets/s, which is what made a paused replay keep playing on screen for seconds. Clients may narrow the stream with `?types=a,b` (no query string ⇒ everything); serialisation is lazy, a message nobody subscribes to is never turned into JSON.
 
-- **Pipeline stages** subclass `PipelineStage` (`pipeline/base.py`): `async process(packet) -> dict | None` and `async reset()`. To add a stage, create a module under `pipeline/` and append an instance to `PIPELINE_STAGES` in `core.py`. Stateful stages (e.g. integrators) **must** implement `reset()`. Reset happens at **both ends** of a replay: `PlaybackEngine` resets every stage at the start of each pass (and on each loop iteration), and `processing_loop` resets them again when it dequeues the `playback_end` sentinel — otherwise the take's final px/py would silently become live mode's starting offset. Doing it on the sentinel rather than in `stop()` is what orders the reset correctly against the live packets queued behind it.
+- **Playback is exclusive over the model.** The queue has two producers, and their `ts_esp_us` come from unrelated time bases (ESP uptime vs. recorded CSV), so interleaving them makes the dt the model derives from that field meaningless and its position integration diverges. `core.accept_live` is the admission gate: it is handed to `UDPReceiver` as an injected `accept(packet)` predicate (the receiver holds no policy of its own and never imports the engine), and it drops live packets at the socket while `playback_engine.active` — counted in `status.udp.muted`. **The heartbeat (0x20) is exempt**: it is live-only telemetry, never recorded and therefore never replayed, and without it `EspHealth` would declare the ESP offline a few seconds into every replay.
 
-  As a backstop for the one-packet windows either side of that switch, `_compute_dt` treats any dt that is negative or larger than `config.MAX_DT_S` as a time-base discontinuity: the packet is dropped (not integrated) but the reference advances, so the next packet resynchronises. This also covers ESP reboots and long dropouts.
+- **Model reset happens at both ends of a replay.** `PlaybackEngine` calls the `on_reset` callable it was handed (`core.model.reset`) at the start of each pass and on each loop iteration; `processing_loop` resets again when it dequeues the `playback_end` sentinel — otherwise the take's final position would silently become live mode's starting offset. Doing it on the sentinel rather than in `stop()` is what orders the reset correctly against the live packets queued behind it.
 
 - **`SuperSlotLayout` (transport/super_layout.py)** is shared mutable state, the trickiest part of the system. The ESP32 can bundle several sensors into one "super slot" packet. The receiver can only name those payload fields (`gyro_x`, `game_rv_qw`, …) if it knows the slot's dep list. That list is learned from the ESP config ACK: `EspConfigurator._recv_ack` calls `layout.update()` on the parsed state, and `protocol.parse_packet` reads it via `layout.get_deps()`. **Until the first ACK arrives**, super packets fall back to opaque `s0..sN` field names with `dep_slots=None` — and `CSVLogger` silently skips those rows. `core.startup()` calls `set_host` (whose ACK populates the layout) precisely so named decoding works immediately. Thread-safety relies on the GIL: the writer runs in a thread (`asyncio.to_thread`), the reader in the event loop.
+
+## The model (`model/`)
+
+Where sensor data becomes something playable. Four pieces, wired together by `model/engine.py`:
+
+```
+clock.py       unwraps the ESP counter into the only timeline anything reads
+quantities.py  turns packets into canonical quantities, whatever the ESP config
+registry.py    runs the declared signals, in dependency order, each contained
+bus.py         publishes to whoever subscribed
+```
+
+### The three rules that are easy to break
+
+**1. All time comes from `Tick.t_us` / `ctx.dt`.** Never `time.monotonic()`, never `ts_rx_us` (wall clock), never the asyncio loop clock. This is what makes a replay reproduce a live run exactly, and a 4× replay reproduce a 1× replay exactly — asserted by `test_the_same_input_gives_the_same_output_twice`.
+
+`ts_esp_us` is a **uint32** (`DataHeader` is `<BBHII`), so it wraps every **71 min 35 s**. `TimeBase` (`model/clock.py`) is the single place that is handled. A wrap and a reboot both look like the counter going backwards; they are separated by *plausibility* — a candidate wrap is accepted only when the unwrapped step is a credible inter-packet interval (≤ `max_gap_us`). A reboot from a high uptime would unwrap to a step of minutes, and is rejected as a discontinuity. Discontinuities **hold** the timeline rather than guessing an advance, because any guess would have to come from a clock the replay does not share.
+
+**2. Every filter is written `ctx.alpha(tau)`, never a fixed coefficient.** `alpha = 1 − exp(−dt/tau)` makes a tuned time constant independent of the sample rate: a value found at 25 Hz behaves identically at 100 Hz and during a fast replay (measured within 0.04 % across 25–400 Hz). A naive `alpha = 0.1` would silently retune every envelope in the model each time the BNO configuration changed, making yesterday's settings worthless.
+
+**3. Ask for physics, not for wiring.** A signal declares `needs=(OMEGA,)`, never `typeId == 0x10`. The old `TorusPositionStage` tested the packet type and demanded seven field names, so changing the ESP configuration broke the model — that was the defect this package exists to fix.
+
+### Canonical quantities
+
+`model/quantities.py` decants any packet — simple slot or *any* super slot — into quantities named for what they are: `attitude_rel` (GAME_RV → ARVR_RV; gravity-referenced, yaw relative and drifting, immune to steel), `attitude_abs` (RV → GEO_RV; magnetic yaw reference, absolute but corrupted near steel), `omega`, `accel`, `linear_accel`, `mag`.
+
+**One source owns a quantity.** Redundancy is normal — an ESP with a super slot *and* the same sensors as simple slots delivers everything twice — and left alone it produces two ticks per period with a wildly irregular dt that every rate then reads as real. Ranking: the preference table first (a judgement about the sensor), then **bundled over standalone**, since only a super slot guarantees attitude and gyro were sampled at the same instant. An incumbent that goes quiet for longer than the tolerance loses its claim, so unplugging a sensor falls back instead of freezing.
+
+**Presence is judged on recency.** A sensor switched off mid-session drops out of `present()` and its signals become unavailable — rather than reporting the last value they ever saw, a plausible steady number no longer connected to anything.
+
+### Adding a signal
+
+One addition, in `model/signals/`:
+
+```python
+@signal("lean_deg", kind=GEOMETRY, unit="deg", range=(0, 90),
+        needs=(ATTITUDE_REL,), doc="Inclinaison du plan de la roue…")
+def lean_deg(ctx):
+    return math.degrees(math.atan2(abs(kinematics(ctx).u[2]), kinematics(ctx).u_perp))
+```
+
+The descriptor feeds `GET /api/model/schema`, and from there the panel and (later) the OSC route list. `needs` = canonical quantities, required. `depends` = signals it cannot exist without (unavailability propagates). `after` = signals it merely wants computed first — the azimuth wants the magnetic guard ahead of it but is perfectly computable without one. Execution order is **derived topologically**; hand-ordering pure functions is meaningless.
+
+Tunable numbers are declared next to the code that reads them (`PARAMS.declare(...)` in `model/params.py`), which gives the API its schema and the panel its slider bounds. Values are clamped, versioned by `revision`, saved as named profiles under `params/`, and read at the top of a tick so a change lands on the next sample, never mid-computation.
+
+**Failure is contained at the node.** A signal that raises yields `None` for its own value, increments its own counter, and the frame goes out regardless. A detector's bug costs its own output and nothing else.
+
+**Numerical note:** prefer `atan2` to `acos` for angles. `lean_deg` used `acos(u_perp)`, which is ill-conditioned exactly where it matters most — near upright, its derivative diverges, so float noise became ~1e-6° of jitter on the signal an artist would want to read at a tenth of a degree. `atan2` brought that to 1.7e-14°.
+
+### What the model emits
+
+Three kinds, deliberately distinct because they must not be transported alike (`model/types.py`):
+
+| Kind | Cadence | Contents | Transport |
+|---|---|---|---|
+| `frame` | one per tick | `t`, `seq`, `pose`, `quality`, `signals`, `states` | droppable — freshest wins |
+| `event` | when it fires | `t`, monotonic `id`, `name`, `payload` | **never dropped** |
+| `meta` | on change | schema, params, source changes | reliable |
+
+`pose` is separate from `signals` on purpose: it is the geometric state every visual consumer needs, always present, not a tunable that could be switched off. A `None` in `signals` means "enabled but nothing to say right now" — distinct from *unavailable* (a configuration matter, explained in the schema) and from an *error* (a fault, counted).
+
+The tick fires on the arrival of the **master** quantity — attitude, since every geometric signal descends from it. Elapsed time is measured **between ticks**, not between packets: with several streams interleaved, packets are milliseconds apart while ticks are one attitude period apart, and using the packet delta would make every rate several times too large.
 
 ### Wire protocol
 
 The binary UDP protocol is firmware-coupled and lives in one place: **`transport/protocol.py`** (Python mirror of the firmware's `protocol.h`). It holds all struct layouts, type IDs, the slot↔sensor naming tables, and the pure `parse_packet` / `parse_ack` / `build_*` functions — no I/O, no state. The transport modules are thin shells over it: `udp_receiver.py` (asyncio socket → `parse_packet` → queue) and `esp_configurator.py` (`build_*` → socket → `parse_ack`, plus connection state). All use little-endian `struct` layouts. The 12-byte `DataHeader` is `<BBHII` (version, type, size, seq, ts_esp_us). Packet type IDs (0x01–0x08 simple sensors, 0x10–0x17 super slots, 0x20 heartbeat, 0x30 CFG_ACK) drive parsing in `parse_packet`. The heartbeat (0x20, 24-byte `<IIIiff` payload: uptime_ms, packets_sent, udp_errors, rssi_dbm, cpu_temp_c, battery_pct) replaced the old standalone battery packet — battery is now just one heartbeat field, and the heartbeat is observed/broadcast but **not** written to CSV.
 
-`TorusPositionStage` rewrites a computed packet's `typeId` to `5` and `type` to `"computed"` — downstream WS clients distinguish computed-position packets by this.
+Raw packets keep their own `type` on the bus (`gyro`, `super_0`, `heartbeat`…): they are the wire, not the model. The model's output uses `frame` / `event` / `meta` instead. The old scheme rewrote a computed packet's `typeId` to `5`, colliding with `0x05 = RV` in `TYPE_NAME`; that is gone.
 
 ### CSV format and the three field-name registries
 
@@ -120,7 +203,7 @@ A session is opened (`create_session`) before recording; takes require an open s
 
 ## Geometry / config knobs
 
-`config.py` holds the torus geometry (`R_TORE` major radius, `r_TORE` tube radius) and `DEGENERATE_THRESHOLD` (below which the wheel is treated as flat and horizontal position is frozen).
+`config.py` holds the **defaults** for the wheel geometry (`R_TORE` major radius, `r_TORE` tube radius) and `DEGENERATE_THRESHOLD` (below which the wheel is treated as flat and horizontal directions are undefined). The model reads the geometry from the live parameters `wheel_R_m` / `wheel_r_m`, which default to those values — swapping wheels between takes should not mean editing a file and restarting. `simulator/motion.py` still reads `config.py` directly: it is the fake *hardware*, not the model's view of it.
 
 ### ESP32 network detection
 
@@ -128,7 +211,7 @@ The ESP has no fixed IP. `config.ESP_HOST` is its **mDNS hostname** (`imu-cyrwhe
 
 ## Simulator (developing without hardware)
 
-The `simulator/` package impersonates the ESP32 **over real UDP sockets**, so everything below the socket runs unmodified: binary parsing, super-slot layout learning, `EspHealth`, the pipeline, CSV, WS, panel. This is the difference from `PlaybackEngine`, which injects straight into the Queue and therefore skips the transport and the whole config plane.
+The `simulator/` package impersonates the ESP32 **over real UDP sockets**, so everything below the socket runs unmodified: binary parsing, super-slot layout learning, `EspHealth`, the model, CSV, WS, panel. This is the difference from `PlaybackEngine`, which injects straight into the Queue and therefore skips the transport and the whole config plane.
 
 ```bash
 SIM=1 python3 main.py                      # in-process fake ESP, one command
@@ -142,6 +225,6 @@ SIM=extern python3 main.py                 # …point the orchestrator at it
 
 **Wire fidelity.** `simulator/wire.py` imports the `struct.Struct` objects from `protocol.py` and only composes them in reverse — no format string is ever duplicated, so the two directions cannot drift. The corollary is that a sim→parser round trip cannot detect a byte-layout error; the anchor for that remains the firmware's `protocol.h`. What it *does* exercise is field naming, dep ordering, layout propagation through the ACK, rates, and timestamps.
 
-**Motion model** (`simulator/motion.py`). Attitude is prescribed analytically as `R(t) = Rz(ψ)·Rx(90°+λ)·Rz(φ)` — the pipeline's frame convention puts the wheel plane in the local xy-plane and the axle on local z, so `u_perp = cos λ` and `pz = R_TORE·cos λ + r_TORE` in closed form. The **gyro is central-differenced from that same attitude**, so ω_local and the emitted quaternion are consistent by construction: a downstream discrepancy is a transport or pipeline bug, never bad data. Scenarios: `static`, `straight` (line at `(R_TORE + r_TORE)·φ̇` — note the rolling radius includes the tube), `coin` (closed circle, constant `pz`), `spiral` (varying lean, crosses the near-degenerate region). `WheelMotion.reference()` returns ground truth, with `px`/`py` only where a closed form genuinely exists — `static` and `straight`; elsewhere `pz` alone, and the `coin` check is that the trajectory closes.
+**Motion model** (`simulator/motion.py`). Attitude is prescribed analytically as `R(t) = Rz(ψ)·Rx(90°+λ)·Rz(φ)` — the model's frame convention puts the wheel plane in the local xy-plane and the axle on local z, so `u_perp = cos λ` and `pz = R_TORE·cos λ + r_TORE` in closed form. The **gyro is central-differenced from that same attitude**, so ω_local and the emitted quaternion are consistent by construction: a downstream discrepancy is a transport or model bug, never bad data. Scenarios: `static`, `straight` (line at `(R_TORE + r_TORE)·φ̇` — note the rolling radius includes the tube), `coin` (closed circle, constant `pz`), `spiral` (varying lean, crosses the near-degenerate region). `WheelMotion.reference()` returns ground truth, with `px`/`py` only where a closed form genuinely exists — `static` and `straight`; elsewhere `pz` alone, and the `coin` check is that the trajectory closes.
 
-**Nominal behaviour only** — no fault injection. Killing the simulator already exercises the offline path, since the heartbeat simply stops. Boot config mirrors an ESP already set up for the torus pipeline (GYRO + GAME_RV at 100 Hz, super 0 = `[0, 6]`). Emission uses one asyncio task per stream on absolute deadlines; `asyncio.sleep` resolution caps faithful rates at roughly 200–500 Hz on macOS, and rates sag under CPU contention (still inside `RATE_TOLERANCE`).
+**Nominal behaviour only** — no fault injection. Killing the simulator already exercises the offline path, since the heartbeat simply stops. Boot config mirrors an ESP already set up for the wheel model (GYRO + GAME_RV at 100 Hz, super 0 = `[0, 6]`). Emission uses one asyncio task per stream on absolute deadlines; `asyncio.sleep` resolution caps faithful rates at roughly 200–500 Hz on macOS, and rates sag under CPU contention (still inside `RATE_TOLERANCE`).

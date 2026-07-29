@@ -1,6 +1,11 @@
 """
 transport/live_monitor.py — In-process observation of the live packet stream.
 
+This watches the *wire*, and only the wire: what is arriving, how fast, and how
+long ago.  Anything derived from the data belongs to the model, which keeps its
+own state and publishes frames — mixing the two here is what previously made a
+computed position masquerade as an incoming stream.
+
 The processing_loop (core.py) is the single packet consumer; it feeds every
 packet to observe().  The monitor keeps, per packet-type name:
   - a sliding 1 s window of arrival timestamps → rate in Hz
@@ -67,16 +72,10 @@ class LiveMonitor:
         hb_age_ms = (None if self._last_heartbeat is None
                      else round((now - self._last_heartbeat) * 1000))
 
-        computed = self._latest.get("computed")
-        torus    = None
-        if computed and "px" in computed:
-            torus = {"px": computed["px"], "py": computed["py"], "pz": computed["pz"]}
-
         return {
             "connected":   connected,
             "age_ms":      age_ms,
             "heartbeat_age_ms": hb_age_ms,   # consumed by EspHealth
             "rates":       dict(sorted(rates.items())),
             "latest":      self._latest,
-            "torus":       torus,
         }

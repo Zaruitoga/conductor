@@ -64,3 +64,19 @@ class PlaybackRequest(BaseModel):
     take: str
     speed: float = 1.0
     loop: bool = False
+
+
+class ParamUpdate(BaseModel):
+    """Set one or more model parameters. Values are clamped to their bounds."""
+    values: dict[str, float]
+
+
+class ProfileRequest(BaseModel):
+    """Save or load a named parameter profile."""
+    name: str
+
+
+class SignalToggle(BaseModel):
+    """Switch one signal on or off without restarting."""
+    name: str
+    enabled: bool

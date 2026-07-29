@@ -23,10 +23,17 @@ import csv
 import logging
 import os
 
+from model.clock import TimeBase
 from storage.session_manager import SessionManager
 from transport.protocol import ALL_SUPER_NAMED_FIELDS
 
 log = logging.getLogger("playback_engine")
+
+# Gap tolerance for the *pacing* clock, deliberately looser than the model's:
+# a real dropout inside a take should still be waited out rather than collapsed,
+# while a 32-bit rollover (which would unwrap to ~700 s from a reboot) is still
+# rejected. See model/clock.py for how the two are told apart.
+_PACING_MAX_GAP_US = 5_000_000
 
 # Must stay in sync with udp_receiver.py — except type 0x20 (heartbeat), which
 # is telemetry never written to the CSV, so there is nothing to replay for it.
@@ -78,19 +85,21 @@ class PlaybackEngine:
 
     async def start(
         self,
-        session:         str,
-        take:            str,
-        queue:           asyncio.Queue,
-        pipeline_stages: list,
-        speed:           float = 1.0,
-        loop:            bool  = False,
+        session:  str,
+        take:     str,
+        queue:    asyncio.Queue,
+        on_reset: callable,
+        speed:    float = 1.0,
+        loop:     bool  = False,
     ) -> None:
         """
         Start replaying a take in the background.
 
-        Resets all pipeline stages before the first packet is pushed so that
-        integrators and other stateful stages start from a clean state.
-        With loop=True the take restarts (and stages reset) on each pass.
+        `on_reset` is called before the first packet of every pass so that
+        integrators and envelopes start clean — a replay that inherited the
+        previous run's state would not be reproducible, which is the whole point
+        of replaying.  A callable rather than a list of stages: what needs
+        resetting is the model's business, not this engine's.
         """
         if self.active:
             log.warning("Playback already active — call stop() first")
@@ -116,7 +125,7 @@ class PlaybackEngine:
 
         self.active = True
         self._task  = asyncio.ensure_future(
-            self._replay_loop(csv_path, queue, pipeline_stages, speed, loop)
+            self._replay_loop(csv_path, queue, on_reset, speed, loop)
         )
         log.info(
             f"Playback started — {session}/{take} (×{speed}"
@@ -146,11 +155,11 @@ class PlaybackEngine:
 
     async def _replay_loop(
         self,
-        csv_path:        str,
-        queue:           asyncio.Queue,
-        pipeline_stages: list,
-        speed:           float,
-        loop:            bool,
+        csv_path: str,
+        queue:    asyncio.Queue,
+        on_reset: callable,
+        speed:    float,
+        loop:     bool,
     ) -> None:
         """Read all CSV rows and push them onto the queue with original timing."""
         try:
@@ -161,19 +170,27 @@ class PlaybackEngine:
                 log.warning("CSV is empty")
                 return
 
-            t0_csv       = int(rows[0]["ts_esp_us"])
+            # Take-relative timeline, unwrapped once for the whole file. The raw
+            # ts_esp_us is a uint32 that rolls over every 71 min 35 s: subtracting
+            # it directly made every row after a rollover come out negative, so a
+            # long take replayed its entire tail in one burst and reported a
+            # negative duration. See model/clock.py.
+            clock  = TimeBase(_PACING_MAX_GAP_US)
+            offsets = [clock.update(int(r["ts_esp_us"])).t_us for r in rows]
+            if clock.wraps:
+                log.info(f"Take crosses {clock.wraps} counter rollover(s) — unwrapped")
+
             self.total   = len(rows)
-            self.total_s = (int(rows[-1]["ts_esp_us"]) - t0_csv) / 1e6
+            self.total_s = offsets[-1] / 1e6
 
             while self.active:
-                for stage in pipeline_stages:
-                    await stage.reset()
+                on_reset()
                 self.index     = 0
                 self.elapsed_s = 0.0
                 t0_real        = asyncio.get_event_loop().time()
                 log.info(f"Replaying {len(rows)} packets…")
 
-                for i, row in enumerate(rows, start=1):
+                for i, (row, offset_us) in enumerate(zip(rows, offsets), start=1):
                     if not self.active:
                         break
 
@@ -185,7 +202,7 @@ class PlaybackEngine:
                         await self._resume.wait()
                         t0_real += asyncio.get_event_loop().time() - t_pause
 
-                    elapsed_csv_s = (int(row["ts_esp_us"]) - t0_csv) / 1e6
+                    elapsed_csv_s = offset_us / 1e6
                     target_real   = t0_real + elapsed_csv_s / speed
                     wait          = target_real - asyncio.get_event_loop().time()
                     if wait > 0:
