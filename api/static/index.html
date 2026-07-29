@@ -117,6 +117,45 @@
       </div>
     </section>
 
+    <!-- ── Scope ────────────────────────────────────────────────────────── -->
+    <!-- Traces at the model's own rate (GET /api/model/history), not from the
+         4 Hz snapshot: at 4 Hz you see one sample in twenty-five, which is
+         useless for deciding where a detection should fire. -->
+    <section class="panel area-scope" aria-labelledby="h-scope">
+      <div class="panel__head">
+        <h2 class="panel__title" id="h-scope">Signaux</h2>
+        <span class="spacer"></span>
+        <label class="switch small">
+          <input id="scope-auto" type="checkbox"> échelle auto
+        </label>
+        <select id="scope-window" aria-label="Fenêtre de temps">
+          <option value="5">5 s</option>
+          <option value="10" selected>10 s</option>
+          <option value="30">30 s</option>
+          <option value="60">60 s</option>
+        </select>
+        <button class="btn btn--icon" id="scope-toggle"
+                aria-expanded="false" aria-controls="scope-picker-box">Choisir…</button>
+      </div>
+      <div class="panel__body">
+        <div class="scope">
+          <canvas id="scope-canvas" role="img"
+                  aria-label="Tracé des signaux sélectionnés"></canvas>
+        </div>
+        <div class="legend" id="scope-legend"></div>
+        <div class="empty" id="scope-empty">Aucun signal sélectionné.</div>
+
+        <div id="scope-picker-box" hidden>
+          <div class="row">
+            <span class="small faint">Un signal indisponible indique ce qu'il faut activer.</span>
+            <span class="spacer"></span>
+            <button class="btn btn--icon" id="scope-clear">Tout décocher</button>
+          </div>
+          <div id="scope-picker"></div>
+        </div>
+      </div>
+    </section>
+
     <!-- ── Enregistrement ───────────────────────────────────────────────── -->
     <section class="panel area-rec" aria-labelledby="h-rec">
       <div class="panel__head">
@@ -306,6 +345,45 @@
           </div>
           <div class="slots" id="preset-list"></div>
           <div class="empty empty--inline faint small" id="preset-empty">Aucun préset.</div>
+        </div>
+      </details>
+    </section>
+
+    <!-- ── Paramètres du modèle ─────────────────────────────────────────── -->
+    <!-- Built entirely from GET /api/model/schema: declaring a parameter next
+         to the code that reads it is all it takes to get a control here. -->
+    <section class="panel" aria-labelledby="h-params">
+      <div class="panel__head">
+        <h2 class="panel__title" id="h-params">Modèle — Réglages</h2>
+        <span class="spacer"></span>
+        <span class="small faint" id="params-revision">—</span>
+      </div>
+
+      <details class="group" open>
+        <summary>Profils</summary>
+        <div class="group__body">
+          <div class="row">
+            <input id="params-name" type="text" placeholder="nom du profil"
+                   aria-label="Nom du profil" style="flex:1">
+            <button class="btn" id="params-save">Sauver</button>
+          </div>
+          <div class="row">
+            <select id="params-profile" aria-label="Profil à charger" style="flex:1"></select>
+            <button class="btn" id="params-load">Charger</button>
+          </div>
+          <div class="row">
+            <button class="btn" id="params-reset">Valeurs par défaut</button>
+            <button class="btn btn--danger" id="model-reset"
+                    title="Remet à zéro la position intégrée et les enveloppes">Reset modèle</button>
+          </div>
+        </div>
+      </details>
+
+      <details class="group" open>
+        <summary>Valeurs</summary>
+        <div class="group__body">
+          <div id="params-list"></div>
+          <div class="empty empty--inline faint small" id="params-empty">Non chargé.</div>
         </div>
       </details>
     </section>

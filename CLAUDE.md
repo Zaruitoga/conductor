@@ -38,9 +38,19 @@ Control (ESP config, sessions, recording, playback) is exposed as a REST API und
 
 **Observation is hybrid push/poll** (see `core.panel_snapshot`). The panel's primary channel is a **native FastAPI WebSocket at `/api/ws`** (`panel_ws` in `routes.py`, one push loop per client at ~4 Hz) that sends a merged snapshot: `{status, live, health, session, recording, playback, esp, model}`. The same per-section dicts are also exposed as REST GETs (`/api/status`, `/api/live`, `/api/health`, `/api/session`, `/api/recording/status`, `/api/playback/status`, `/api/model`) which the frontend uses only as a **fallback** when the socket drops (`js/store.js` `startFallback`). All snapshot builders live in `core.py` (`status_dict`/`session_dict`/`recording_dict`/`playback_dict`/`model_dict`/`panel_snapshot`) — single source of truth. Stream observation (per-type rates, liveness, latest values) is done backend-side by `LiveMonitor` (`transport/live_monitor.py`), fed from `processing_loop`. `LiveMonitor` watches **the wire and only the wire**; anything derived belongs to the model, which keeps its own state.
 
-The 4 Hz snapshot carries the model's latest frame as a convenience, **not as a way to watch a signal**: at 4 Hz you see one sample in twenty-five, which is useless for setting a threshold. A scope with a full-rate backend history is the next piece to build.
+The 4 Hz snapshot carries the model's latest frame as a convenience, **not as a way to watch a signal**: at 4 Hz you see one sample in twenty-five, which is useless for setting a threshold. That is what the scope is for — see below.
 
 **Model control is REST too**: `GET /api/model/schema` (every declared signal with its unit, range, dependencies and availability, plus every parameter), `GET|PATCH /api/model/params`, `POST /api/model/params/{save,load,reset}`, `POST /api/model/signal` (enable/disable one node), `POST /api/model/reset` (clear integrators).
+
+#### The scope (`model/scope.py`, `js/panels/scope.js`)
+
+`ScopeRing` is an **inline** bus subscriber, which is the whole point: it records every frame at the model's own rate, including during a fast replay where the WebSocket fan-out is deliberately dropping them to keep a browser current.
+
+`GET /api/model/history?signals=a,b&window=10&points=600` returns **min/max envelopes per pixel column**, not decimated samples. Sending every 40th sample would smooth away exactly what a detector triggers on — a one-sample spike is a real impact, not noise to average out. The reduction is `np.fmin/fmax.reduceat`, which skips NaN, so a stretch where a signal could not be computed stays a *hole* in the trace rather than being dragged to zero (which would look like the wheel coming to rest, a state a detector is meant to recognise).
+
+Storage is one preallocated float64 ring per signal plus a shared timestamp ring (`DEFAULT_CAPACITY = 24 000` samples ≈ 60 s at 400 Hz, 4 min at 100 Hz). A ring of frame dicts would be tens of megabytes and slow to query. **The ring is cleared on `meta.topic == "reset"`** — a replay restarts the timeline at zero, and keeping the old samples would make the timestamps non-monotonic and every windowed query nonsense.
+
+The panel builds its signal picker and its parameter controls **entirely from `GET /api/model/schema`**: declaring a signal or a `PARAMS.declare(...)` is the whole wiring, there is no frontend list to keep in sync. An unavailable signal stays listed, greyed, with the reason next to it (`nécessite accel (active ACCEL)`) — knowing what to switch on beats the row simply not being there.
 
 **ESP health is unified** (`transport/esp_health.py`, `EspHealth`, snapshot key `health`). Single source of "is the ESP alive and behaving", fusing two signals so the UI shows one verdict (`online`/`degraded`/`offline`) instead of redundant indicators: (1) **presence + telemetry** from the periodic heartbeat packet (no heartbeat for `config.HEARTBEAT_TIMEOUT_S` ⇒ offline, independent of the sensor stream), and (2) **stream conformance** — it cross-checks the measured per-type rates (`LiveMonitor`) against what the configured ESP state (`configurator.state`, last CFG_ACK) says should arrive, flagging `missing`/`slow` streams (tolerance `config.RATE_TOLERANCE`). The panel renders this in one collapsible "ESP — Santé & connexion" card and drives the header status dot from `health.state`.
 
@@ -57,7 +67,7 @@ No build step, no framework, no CDN — plain ES modules, so it works offline. `
 
 Two sections, `session` and `esp`, are **change-gated in the store** because they drive form rebuilds; everything else re-renders every tick, which is safe given the write helpers above.
 
-The layout is task-oriented rather than a uniform card grid: a persistent operations column (session strip, health, live, recording, playback, takes) and a collapsible configuration aside (ESP slots, super-slots, presets, session metadata). Breakpoints at 1180 px (aside moves above) and 900 px (single column). Keyboard shortcuts live in `js/shortcuts.js` (`R` rec, `M` marker, `Space` play/pause, `S` stop, `L` loop, `C` config, `?` help) and are suppressed while typing.
+The layout is task-oriented rather than a uniform card grid: a persistent operations column (session strip, health, scope, live, recording, playback, takes) and a collapsible configuration aside (ESP slots, super-slots, presets, model parameters, session metadata). Breakpoints at 1180 px (aside moves above) and 900 px (single column). Keyboard shortcuts live in `js/shortcuts.js` (`R` rec, `M` marker, `Space` play/pause, `S` stop, `L` loop, `C` config, `?` help) and are suppressed while typing.
 
 The playback progress bar is **read-only by design** — `PlaybackEngine` has no seek. Pause/resume state is always read back from `playback.paused`, never applied optimistically.
 

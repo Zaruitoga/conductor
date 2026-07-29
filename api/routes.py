@@ -107,6 +107,21 @@ async def model_state() -> dict:
     return core.model_dict()
 
 
+@router.get("/model/history")
+async def model_history(signals: str = "", window: float = 10.0,
+                        points: int = 600) -> dict:
+    """
+    Full-rate history of the named signals, as min/max envelopes per column.
+
+    This is the endpoint the scope polls, and the reason it exists: the 4 Hz
+    panel push shows one sample in twenty-five, which is enough to read a number
+    and useless for deciding where a detection should fire.  Envelopes rather
+    than decimation, so a one-sample spike still reads as a spike.
+    """
+    names = [s for s in signals.split(",") if s] or core.scope.names
+    return core.scope.history(names, window_s=window, points=points)
+
+
 @router.get("/model/params")
 async def get_params() -> dict:
     return core.model.params.snapshot()

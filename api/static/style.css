@@ -205,6 +205,7 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
   grid-template-areas:
     "session session"
     "health  health"
+    "scope   scope"
     "live    live"
     "rec     play"
     "takes   takes";
@@ -212,6 +213,7 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 
 .ops > .area-session { grid-area: session; }
 .ops > .area-health  { grid-area: health; }
+.ops > .area-scope   { grid-area: scope; }
 .ops > .area-live    { grid-area: live; }
 .ops > .area-rec     { grid-area: rec; }
 .ops > .area-play    { grid-area: play; }
@@ -233,7 +235,7 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 @media (max-width: 900px) {
   .ops {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-areas: "session" "health" "live" "rec" "play" "takes";
+    grid-template-areas: "session" "health" "scope" "live" "rec" "play" "takes";
   }
 }
 
@@ -748,3 +750,109 @@ kbd {
 .shortcut-list kbd { min-width: 34px; text-align: center; }
 
 [hidden] { display: none !important; }
+
+/* ── Scope ─────────────────────────────────────────────────────────────────
+   The trace is drawn on a canvas rather than as SVG: at 600 columns × several
+   signals, redrawn ~8×/s, keeping that many DOM nodes in sync costs far more
+   than repainting a bitmap.
+   ────────────────────────────────────────────────────────────────────────── */
+.scope {
+  position: relative;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  overflow: hidden;
+}
+
+#scope-canvas {
+  display: block;
+  width: 100%;
+  height: 220px;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-4);
+}
+
+.legend__item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--t-sm);
+}
+
+.legend__swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex: none;
+}
+
+.legend__name { color: var(--fg-dim); }
+.legend__value { color: var(--fg); }
+
+/* Signal picker */
+.pick-group + .pick-group { margin-top: var(--sp-3); }
+
+.picks {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: var(--sp-1);
+}
+
+.pick {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-1);
+  border-left: 3px solid var(--pick-colour, transparent);
+  cursor: pointer;
+  font-size: var(--t-sm);
+}
+
+.pick:hover { background: var(--bg-3); }
+
+/* An unavailable signal stays listed, greyed, with the reason next to it —
+   knowing what to switch on is more useful than the row simply not being there. */
+.pick--off { opacity: .55; cursor: not-allowed; }
+.pick--off:hover { background: none; }
+
+.pick__name { font-family: var(--f-mono); }
+.pick__why { margin-left: auto; text-align: right; }
+
+/* ── Model parameters ──────────────────────────────────────────────────── */
+.param-group + .param-group { margin-top: var(--sp-4); }
+
+.param {
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--line);
+}
+.param:last-child { border-bottom: none; }
+
+.param__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.param__name {
+  font-family: var(--f-mono);
+  font-size: var(--t-sm);
+}
+
+.param__number {
+  width: 88px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.param__slider {
+  width: 100%;
+  margin-top: var(--sp-1);
+  accent-color: var(--accent);
+}
+
+.param__doc { margin-top: 2px; line-height: 1.35; }

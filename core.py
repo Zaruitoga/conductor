@@ -28,7 +28,8 @@ from transport.esp_health        import EspHealth
 from transport.protocol         import HB_TYPE
 from model.bus                  import ModelBus
 from model.engine               import Model
-from model.types                import RAW
+from model.scope                import ScopeRing
+from model.types                import FRAME, META, RAW
 from storage.session_manager    import SessionManager
 from storage.csv_logger         import CSVLogger
 from storage.playback_engine    import PlaybackEngine
@@ -73,7 +74,12 @@ def _remember_frame(kind: str, frame) -> None:
     latest_frame = frame
 
 
-bus.subscribe_sync("panel", ("frame",), _remember_frame)
+bus.subscribe_sync("panel", (FRAME,), _remember_frame)
+
+# Full-rate signal history behind the scope. Inline, so it records every frame
+# even during a fast replay where the WS fan-out is dropping them on purpose.
+scope = ScopeRing()
+bus.subscribe_sync("scope", (FRAME, META), scope.on_bus)
 
 # Failures of the engine itself, as opposed to of a single signal (which the
 # registry contains). Should stay at zero; if it does not, the model is frozen
@@ -311,6 +317,7 @@ def model_dict() -> dict:
         "signals": frame.signals if frame else {},
         "quality": frame.quality if frame else None,
         "engine_errors": dict(model_errors),
+        "scope":   scope.stats(),
     }
 
 

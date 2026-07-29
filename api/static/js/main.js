@@ -14,6 +14,8 @@ import { initPlayback, refreshSessions } from "./panels/playback.js";
 import { initTakes } from "./panels/takes.js";
 import { initEsp } from "./panels/esp.js";
 import { initPresets } from "./panels/presets.js";
+import { initScope } from "./panels/scope.js";
+import { initParams } from "./panels/params.js";
 import { initShortcuts } from "./shortcuts.js";
 
 initLayout();
@@ -26,6 +28,8 @@ initPlayback();
 initTakes();
 initEsp();
 initPresets();
+initScope();
+initParams();
 initShortcuts();
 
 refreshSessions();
