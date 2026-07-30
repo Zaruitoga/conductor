@@ -26,12 +26,13 @@ import logging
 
 from model.bus import ModelBus
 from model.clock import DISCONTINUITY, FIRST, TimeBase
+from model.detectors import DETECTORS
 from model.params import PARAMS
 from model.quantities import (
     ATTITUDE_REL, QuantityResolver, configured_quantities,
 )
 from model.registry import SIGNALS, Context
-from model.types import FRAME, META, Frame, Meta
+from model.types import EVENT, FRAME, META, Event, Frame, Meta
 
 # Registering the signals is a side effect of the import.
 import model.signals  # noqa: F401
@@ -49,11 +50,13 @@ class Model:
     """
 
     def __init__(self, bus: ModelBus | None = None, max_gap_us: int = 500_000,
-                 esp_state=None, registry=None):
+                 esp_state=None, registry=None, detectors=None):
         self.bus        = bus
-        # Defaults to the declared registry. Overridable so a batch run, or a
-        # test, can drive an isolated graph without disturbing the live model.
+        # Defaults to the declared registry/detectors. Overridable so a batch
+        # run, or a test, can drive an isolated graph without disturbing the
+        # live model.
         self.registry   = registry if registry is not None else SIGNALS
+        self.detectors  = detectors if detectors is not None else DETECTORS
         self.params     = PARAMS
         self.clock      = TimeBase(max_gap_us)
         self.resolver   = QuantityResolver()
@@ -63,9 +66,10 @@ class Model:
         # schema claim a sensor is configured minutes after it was switched off.
         self._esp_state = esp_state or (lambda: None)
 
-        self._states: dict[str, dict] = {}   # per-signal persistent storage
+        self._states: dict[str, dict] = {}   # per-signal/detector persistent storage
         self._prev:   dict = {}              # last tick's values
         self._availability: dict = {}
+        self._detector_availability: dict = {}
         self._availability_key: tuple | None = None
 
         self._last_tick_us: int | None = None
@@ -73,17 +77,28 @@ class Model:
 
         self.seq   = 0
         self.ticks = 0
+        # Event.id is monotonic across the *process* lifetime (model/types.py),
+        # unlike seq — it must NOT reset with the rest of a run, or two replay
+        # passes could reuse the same ids and a consumer tracking gaps would
+        # misread a real loss as none.
+        self._event_id = 0
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
     def reset(self) -> None:
-        """Return to a clean state. Every integrator and envelope starts over."""
+        """
+        Return to a clean state. Every integrator and envelope starts over.
+
+        `_event_id` is deliberately untouched — see its declaration above.
+        """
         self.clock.reset()
         self.resolver.reset()
         self.registry.reset()
+        self.detectors.reset()
         self._states.clear()
         self._prev.clear()
         self._availability = {}
+        self._detector_availability = {}
         self._availability_key = None
         self._last_tick_us = None
         self._broken = False
@@ -130,6 +145,10 @@ class Model:
         ctx = Context(self.resolver, t_us, dt, status,
                       values={}, prev=self._prev, states=self._states)
         values = self.registry.compute(ctx, self._availability)
+        # Detectors read this tick's just-computed signals (ctx.values) and the
+        # previous tick's (ctx.prev — still the old dict; reassigned below).
+        # Run before that reassignment so ctx.previous() means what it says.
+        fired = self.detectors.run(ctx, self._detector_availability)
 
         self.seq   += 1
         self.ticks += 1
@@ -150,6 +169,11 @@ class Model:
 
         if self.bus is not None:
             self.bus.publish(FRAME, frame)
+            # Published after the frame, so a subscriber always has this tick's
+            # continuous values in hand before an event that may reference them.
+            for name, payload in fired:
+                self._event_id += 1
+                self.bus.publish(EVENT, Event(self._event_id, t_us, name, payload))
         return frame
 
     def _elapsed(self, t_us: int, clock_status: str) -> tuple[float, str]:
@@ -222,12 +246,14 @@ class Model:
         going on reporting whatever they last saw.
         """
         present = self.resolver.present(t_us)
-        key = (present, frozenset(self.registry.disabled))
+        key = (present, frozenset(self.registry.disabled),
+               frozenset(self.detectors.disabled))
         if key == self._availability_key:
             return
 
         self._availability_key = key
         self._availability = self.registry.availability(present)
+        self._detector_availability = self.detectors.availability(present)
 
         sources = self.resolver.sources(t_us)
         if self.bus is not None:
@@ -264,8 +290,9 @@ class Model:
                 # from never having been asked, and a different fix.
                 "missing":    sorted(set(configured) - set(present)),
             },
-            "signals": self.registry.schema(present),
-            "params":  self.params.schema(),
+            "signals":   self.registry.schema(present),
+            "detectors": self.detectors.schema(present),
+            "params":    self.params.schema(),
         }
 
     def snapshot(self) -> dict:

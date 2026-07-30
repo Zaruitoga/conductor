@@ -23,6 +23,13 @@ export function initTopbar() {
     setText($("m-ws"), s.ws.clients);
   });
 
+  // A glance at whether Live is actually being fed, next to the transport
+  // counters — the same reasoning as m-ws, one level downstream.
+  on("osc", (o) => {
+    if (!o) return;
+    setText($("m-osc"), o.enabled ? o.out_hz : "off");
+  });
+
   // While the WS is down we keep rendering, but if the REST fallback also
   // fails the panel must say so rather than show stale numbers.
   setConnectionHandler((connected, error) => {

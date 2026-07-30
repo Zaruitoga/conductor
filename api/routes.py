@@ -18,7 +18,9 @@ from api.models import (
     HostConfig, SimpleSlotConfig, SuperSlotConfig,
     SessionCreate, SessionUpdate, TakeStart, TakeUpdate, PlaybackRequest,
     ParamUpdate, ProfileRequest, SignalToggle,
+    OscRouteCreate, OscRouteUpdate, OscSettings, OscLiveRefresh,
 )
+from osc import targets as osc_targets
 
 router = APIRouter(prefix="/api")
 
@@ -376,3 +378,130 @@ async def playback_resume() -> dict:
 async def playback_status() -> dict:
     """Playback state with progress (REST fallback for the WS push)."""
     return core.playback_dict()
+
+
+# ── OSC bridge: bus → Ableton Live, remapped by data, not by code ──────────
+# Route definitions are edited here; runtime state (enabled, rate, AbletonOSC
+# link health) rides in the panel snapshot's "osc" section — see
+# core.osc_dict() / core.osc_routes_dict() for the single source of truth both
+# this REST fallback and the WS push read from.
+
+@router.get("/osc")
+async def osc_state() -> dict:
+    """OSC bridge runtime (REST fallback for the WS push)."""
+    return core.osc_dict()
+
+
+@router.get("/osc/routes")
+async def osc_routes_list() -> dict:
+    """Every route, annotated with whether its source still exists."""
+    return core.osc_routes_dict()
+
+
+@router.post("/osc/routes")
+async def osc_route_create(req: OscRouteCreate) -> dict:
+    try:
+        core.osc_routes.create(**req.model_dump())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return core.osc_routes_dict()
+
+
+@router.patch("/osc/routes/{route_id}")
+async def osc_route_update(route_id: str, req: OscRouteUpdate) -> dict:
+    try:
+        core.osc_routes.update(route_id, **req.model_dump(exclude_none=True))
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return core.osc_routes_dict()
+
+
+@router.delete("/osc/routes/{route_id}")
+async def osc_route_delete(route_id: str) -> dict:
+    try:
+        core.osc_routes.delete(route_id)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    return core.osc_routes_dict()
+
+
+@router.post("/osc/routes/{route_id}/test")
+async def osc_route_test(route_id: str) -> dict:
+    """
+    Sweep a route's output over ~1 s so whatever it is mapped to visibly moves
+    in Live — the practical way to MIDI-learn or verify a mapping without
+    moving the wheel.
+    """
+    try:
+        await core.osc_bridge.test_route(route_id)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"tested": route_id}
+
+
+@router.post("/osc/routes/save")
+async def osc_routes_save(req: ProfileRequest) -> dict:
+    core.osc_routes.save_profile(req.name)
+    return core.osc_routes_dict()
+
+
+@router.post("/osc/routes/load")
+async def osc_routes_load(req: ProfileRequest) -> dict:
+    try:
+        core.osc_routes.load_profile(req.name)
+    except FileNotFoundError:
+        raise HTTPException(404, f"Mapping introuvable : {req.name}")
+    return core.osc_routes_dict()
+
+
+@router.patch("/osc/settings")
+async def osc_settings_update(req: OscSettings) -> dict:
+    """Master enable, send-rate cap, and the AbletonOSC target — all live,
+    no restart (osc/live.py's client is swapped, not the whole bridge)."""
+    if req.enabled is not None:
+        core.osc_bridge.set_enabled(req.enabled)
+    if req.rate_hz is not None:
+        if req.rate_hz <= 0:
+            raise HTTPException(400, "rate_hz must be > 0")
+        core.osc_bridge.rate_hz = req.rate_hz
+    if req.host is not None or req.port is not None:
+        core.osc_live.retarget(
+            req.host if req.host is not None else core.osc_live.host,
+            req.port if req.port is not None else core.osc_live.send_port,
+        )
+    return core.osc_dict()
+
+
+@router.get("/osc/targets")
+async def osc_targets_list() -> dict:
+    """The catalog of known AbletonOSC destinations (osc/targets.py)."""
+    return {"targets": osc_targets.schema()}
+
+
+@router.get("/osc/live")
+async def osc_live_state() -> dict:
+    """Whatever track/device/parameter names have been discovered so far —
+    instant, no round trip to Live. See POST .../refresh for that."""
+    return {"online": core.osc_live.online, **core.osc_live.discovery_snapshot()}
+
+
+@router.post("/osc/live/refresh")
+async def osc_live_refresh(req: OscLiveRefresh) -> dict:
+    """Re-query AbletonOSC at one level of the tree and update the cache."""
+    if req.level == "tracks":
+        await core.osc_live.refresh_tracks()
+    elif req.level == "devices":
+        if req.track is None:
+            raise HTTPException(400, "track is required for level=devices")
+        await core.osc_live.refresh_devices(req.track)
+    elif req.level == "params":
+        if req.track is None or req.device is None:
+            raise HTTPException(400, "track and device are required for level=params")
+        await core.osc_live.refresh_parameters(req.track, req.device)
+    else:
+        raise HTTPException(400, f"Unknown level: {req.level!r}")
+    return {"online": core.osc_live.online, **core.osc_live.discovery_snapshot()}

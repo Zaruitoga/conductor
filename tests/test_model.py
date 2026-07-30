@@ -15,9 +15,13 @@ whole redesign was for:
 
 import math
 
+from model.bus import ModelBus
+from model.detectors import DETECTORS, DetectorRegistry, DetectorSpec, threshold
 from model.engine import Model
+from model.params import PARAMS
 from model.registry import DYNAMIC, Registry, SignalSpec
-from model.quantities import ATTITUDE_REL
+from model.quantities import ACCEL, ATTITUDE_REL
+from model.types import EVENT
 from simulator.motion import WheelMotion
 from config import R_TORE, r_TORE
 
@@ -64,6 +68,22 @@ def _run(scenario="coin", seconds=6.0, hz=HZ, maker=_super):
             if frame is not None:
                 frames.append(frame)
     return motion, model, frames
+
+
+def _run_with_events(scenario="coin", seconds=6.0, hz=HZ, maker=_super):
+    """Like `_run`, but with a real bus so events are observable too."""
+    motion = WheelMotion(scenario=scenario)
+    bus    = ModelBus()
+    events = []
+    bus.subscribe_sync("events", (EVENT,), lambda k, o: events.append(o))
+    model  = Model(bus=bus)
+    frames = []
+    for i in range(int(seconds * hz)):
+        for packet in maker(motion, i / hz, i):
+            frame = model.feed(packet)
+            if frame is not None:
+                frames.append(frame)
+    return motion, model, frames, events
 
 
 # ── Physics, against the simulator's closed forms ────────────────────────────
@@ -365,6 +385,199 @@ def test_reset_clears_the_integrators():
     after = [f for i in range(3) for p in _super(motion, i / HZ, i)
              if (f := model.feed(p)) is not None]
     assert abs(after[0].signals["pos_x"]) < 1e-9
+
+
+# ── Detectors: events built on top of signals ────────────────────────────────
+# A synthetic detector over a synthetic, hand-driven signal, so the crossing
+# logic in model/detectors.py can be checked exactly instead of hoped for from
+# whatever the simulator's physics happens to produce.
+
+_DRIVEN: dict = {"v": 0.0}
+_T_ON   = PARAMS.declare("test_detector_on_v", default=5.0, min=0.0, max=100.0)
+_T_OFF  = PARAMS.declare("test_detector_off_v", default=2.0, min=0.0, max=100.0)
+_T_REFR = PARAMS.declare("test_detector_refractory_s", default=0.05, min=0.0, max=10.0)
+
+
+def _driven_registry() -> Registry:
+    registry = Registry()
+    registry.add(SignalSpec(
+        name="driven", fn=lambda ctx: _DRIVEN["v"], kind=DYNAMIC, unit="",
+        range=None, needs=(ATTITUDE_REL,), depends=(), after=(), params=(), doc="",
+    ))
+    return registry
+
+
+def _driven_detectors() -> DetectorRegistry:
+    detectors = DetectorRegistry()
+    detectors.add(DetectorSpec(
+        name="fires", fn=threshold("driven", _T_ON, _T_OFF, _T_REFR),
+        source="driven", needs=(ATTITUDE_REL,), params=(_T_ON, _T_OFF, _T_REFR),
+        doc="",
+    ))
+    return detectors
+
+
+def test_threshold_fires_once_per_crossing_and_respects_hysteresis():
+    motion = WheelMotion(scenario="coin")
+    bus, events = ModelBus(), []
+    bus.subscribe_sync("events", (EVENT,), lambda k, o: events.append(o))
+    model = Model(bus=bus, registry=_driven_registry(), detectors=_driven_detectors())
+
+    # below on(5) → above on(5): fires once → stays above: no refire while
+    # armed=False → drops to below off(2): rearms → above on(5) again: fires.
+    schedule = [0.0] * 10 + [6.0] * 10 + [1.0] * 10 + [6.0] * 10
+    for i, v in enumerate(schedule):
+        _DRIVEN["v"] = v
+        for p in _super(motion, i / HZ, i):
+            model.feed(p)
+
+    assert [e.name for e in events] == ["fires", "fires"]
+    assert events[0].payload == {"value": 6.0}
+    assert events[1].id == events[0].id + 1
+
+
+def test_threshold_refractory_blocks_a_rapid_rearm_but_not_a_later_one():
+    """
+    Isolates the refractory window specifically, as distinct from hysteresis:
+    a value that dips to `off` (re-arming) and crosses `on` again well within
+    `refractory` must not refire yet — but the same crossing, given enough
+    elapsed time, must.
+    """
+    motion = WheelMotion(scenario="coin")
+    bus, events = ModelBus(), []
+    bus.subscribe_sync("events", (EVENT,), lambda k, o: events.append(o))
+    model = Model(bus=bus, registry=_driven_registry(), detectors=_driven_detectors())
+
+    # t=0.01 fires; t=0.03 dips to `off` and re-arms; t=0.04 re-crosses `on`
+    # just 0.03 s later — inside the 0.05 s refractory, so it must not refire.
+    schedule = {0: 0.0, 1: 6.0, 2: 6.0, 3: 1.0, 4: 6.0}
+    for i in range(5):
+        _DRIVEN["v"] = schedule[i]
+        for p in _super(motion, i / HZ, i):
+            model.feed(p)
+    assert len(events) == 1, "a rapid re-crossing inside the refractory window fired"
+
+    # Held above `on` well past the 0.05 s refractory: the crossing blocked
+    # above must fire as soon as the cooldown elapses.
+    _DRIVEN["v"] = 6.0
+    for i in range(5, 20):
+        for p in _super(motion, i / HZ, i):
+            model.feed(p)
+    assert len(events) == 2, "expected the blocked crossing to fire once refractory elapsed"
+
+
+def test_detector_availability_names_the_missing_quantity():
+    reg = DetectorRegistry()
+    reg.add(DetectorSpec(name="needs_accel", fn=lambda ctx: None, source="x",
+                         needs=(ACCEL,), params=(), doc=""))
+
+    absent = reg.availability(frozenset())
+    assert not absent["needs_accel"]["available"]
+    assert "accel" in absent["needs_accel"]["reason"]
+
+    present = reg.availability(frozenset({ACCEL}))
+    assert present["needs_accel"]["available"]
+
+
+def test_a_detector_that_raises_does_not_stop_the_frame():
+    """A detector's bug costs its own event and nothing else — same contract
+    as a signal's (test_a_signal_that_raises_does_not_stop_the_frame)."""
+    detectors = DetectorRegistry()
+
+    def boom(ctx):
+        raise RuntimeError("bad threshold")
+
+    detectors.add(DetectorSpec(name="boom", fn=boom, source="driven",
+                               needs=(ATTITUDE_REL,), params=(), doc=""))
+
+    motion = WheelMotion(scenario="coin")
+    model  = Model(bus=None, registry=_driven_registry(), detectors=detectors)
+    frames = [f for i in range(50)
+              for p in _super(motion, i / HZ, i)
+              if (f := model.feed(p)) is not None]
+
+    assert len(frames) == 50, "frames stopped coming"
+    assert detectors.errors["boom"] == 50
+    assert "bad threshold" in detectors.last_error["boom"]
+
+
+def test_detector_name_cannot_collide_with_a_signal():
+    """They would share ctx.state and corrupt each other's memory."""
+    try:
+        DETECTORS.add(DetectorSpec(name="lean_deg", fn=lambda ctx: None,
+                                   source="x", needs=(), params=(), doc=""))
+        assert False, "a detector named after a declared signal must be refused"
+    except ValueError:
+        pass
+
+
+def test_no_spurious_impact_or_burst_on_steady_motion():
+    """A steady, noiseless coin roll must not look like a shock or a burst."""
+    def with_accel(m, t, s):
+        return _super(m, t, s, 0x13, with_accel=True)
+
+    _, _, _, events = _run_with_events("coin", seconds=10.0, maker=with_accel)
+    names = {e.name for e in events}
+    assert "impact" not in names
+    assert "burst" not in names
+
+
+def test_revolution_fires_once_per_turn_matching_the_prescribed_spin_rate():
+    """
+    spin_deg is exactly the prescribed spin angle φ(t) mod 360 — precession and
+    lean cancel out of atan2(u[0], u[1]) by construction (see geometry.py's own
+    comment on spin_deg) — so the wrap period is exactly 360/spin_dps,
+    independent of lean or precession. That closed form, taken straight from
+    WheelMotion's own constructor parameter rather than from any signal the
+    model computes, is the external check here — the same role
+    WheelMotion.reference() plays for position elsewhere in this file.
+    """
+    motion = WheelMotion(scenario="coin")     # spin_dps defaults to 180.0
+    seconds = 10.0
+    _, _, _, events = _run_with_events("coin", seconds=seconds, maker=_super)
+
+    revolutions = [e for e in events if e.name == "revolution"]
+    expected_period = 360.0 / 180.0
+    expected_count  = int(seconds / expected_period)
+
+    assert abs(len(revolutions) - expected_count) <= 1
+    assert all(e.payload["direction"] == 1 for e in revolutions), \
+        "a steadily forward-spinning wheel must wrap the same way every time"
+
+    gaps = [b.t_us - a.t_us for a, b in zip(revolutions, revolutions[1:])]
+    for gap in gaps:
+        assert abs(gap / 1e6 - expected_period) < 1.0 / HZ, \
+            f"revolution spacing drifted from the prescribed spin period: {gap / 1e6}s"
+
+    ids = [e.id for e in revolutions]
+    assert ids == sorted(set(ids)), "event ids must be unique and increasing"
+
+
+def test_event_ids_survive_a_reset_but_seq_does_not():
+    """
+    Event.id is monotonic across the *process*, unlike Frame.seq — two replay
+    passes must never hand out the same event id, or a consumer counting on the
+    id to prove nothing was missed would misread a real loss as none.
+    """
+    _, model, frames, events = _run_with_events("coin", seconds=2.5, maker=_super)
+    assert frames[-1].seq == len(frames)
+    assert len(events) >= 1, "expected at least one revolution in 2.5 s at 2 s/turn"
+    ids_before = [e.id for e in events]
+
+    model.reset()
+
+    motion2 = WheelMotion(scenario="coin")
+    post_reset = []
+    for i in range(250):                      # another 2.5 s: at least one more turn
+        for p in _super(motion2, i / HZ, i):
+            f = model.feed(p)
+            if f is not None:
+                post_reset.append(f)
+
+    assert post_reset[0].seq == 1, "seq must restart after reset"
+    assert len(events) > len(ids_before), "expected new events after the reset"
+    assert min(e.id for e in events[len(ids_before):]) > max(ids_before), \
+        "an event id was reused after reset"
 
 
 def main() -> None:

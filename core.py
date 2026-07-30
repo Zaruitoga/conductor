@@ -30,6 +30,9 @@ from model.bus                  import ModelBus
 from model.engine               import Model
 from model.scope                import ScopeRing
 from model.types                import FRAME, META, RAW
+from osc.bridge                 import OscBridge
+from osc.live                   import LiveLink
+from osc.routes                 import RouteTable
 from storage.session_manager    import SessionManager
 from storage.csv_logger         import CSVLogger
 from storage.playback_engine    import PlaybackEngine
@@ -115,6 +118,20 @@ model = Model(
     max_gap_us = int(config.MAX_DT_S * 1e6),
     esp_state  = lambda: configurator.state,
 )
+
+# OSC bridge: bus -> Ableton Live, remapped by editing routes, never by
+# touching this code (see osc/ package docstring). Constructed here — nothing
+# below needs a running event loop — but attached to the bus and its sockets
+# started inside startup(), exactly like ws_server: the RELIABLE event
+# subscription creates its own draining task, which requires the loop to
+# already be running (model/bus.py's subscribe()).
+osc_routes = RouteTable()
+osc_live   = LiveLink(
+    host        = config.OSC_HOST,
+    send_port   = config.OSC_SEND_PORT,
+    listen_port = config.OSC_LISTEN_PORT,
+)
+osc_bridge = OscBridge(osc_routes, osc_live, rate_hz = config.OSC_RATE_HZ)
 
 # Runtime handles — populated by startup(), referenced by the API routes.
 queue:        asyncio.Queue | None = None
@@ -321,6 +338,30 @@ def model_dict() -> dict:
     }
 
 
+def osc_dict() -> dict:
+    """OSC bridge runtime: enabled, rate, AbletonOSC link health, counters."""
+    return osc_bridge.snapshot()
+
+
+def osc_routes_dict() -> dict:
+    """
+    The route table, each row annotated with whether its source still exists.
+
+    Recomputed from the live model on every call rather than cached on the
+    route — exactly like a signal's own availability (model/registry.py): a
+    route naming a signal that was since removed or renamed still loads and
+    lists, it just says why it cannot fire.
+    """
+    return {
+        "routes": osc_routes.schema(
+            frozenset(model.registry.names), frozenset(model.detectors.names),
+        ),
+        "profile":  osc_routes.profile,
+        "profiles": osc_routes.list_profiles(),
+        "revision": osc_routes.revision,
+    }
+
+
 def panel_snapshot() -> dict:
     """Full observation snapshot pushed to the control panel over WS."""
     return {
@@ -332,6 +373,7 @@ def panel_snapshot() -> dict:
         "playback":  playback_dict(),
         "esp":       configurator.state,
         "model":     model_dict(),
+        "osc":       osc_dict(),
     }
 
 
@@ -344,6 +386,10 @@ async def startup() -> None:
     ws_server = WSServer(config.WS_HOST, config.WS_PORT)
     await ws_server.start()
     ws_server.attach(bus)
+
+    osc_bridge.attach(bus)
+    await osc_live.start()
+    await osc_bridge.start()
 
     _transport, udp_protocol = await start_udp_receiver(
         config.UDP_HOST, config.UDP_PORT, queue, layout, accept_live
@@ -391,6 +437,9 @@ async def shutdown() -> None:
     for task in _tasks:
         task.cancel()
     _tasks.clear()
+
+    await osc_bridge.stop()
+    await osc_live.stop()
 
     await bus.close()
 

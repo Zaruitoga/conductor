@@ -33,6 +33,13 @@ CONFIG_ACK_TIMEOUT_S = 1.0
 HEARTBEAT_TIMEOUT_S = 6.0   # no heartbeat for this long ⇒ ESP considered offline
 RATE_TOLERANCE      = 0.25  # a stream is "conform" if measured Hz ≥ expected × (1 − this)
 
+# OSC bridge: bus → Ableton Live (AbletonOSC remote script). Retargetable at
+# runtime via PATCH /api/osc/settings — these are only the boot defaults.
+OSC_HOST        = "127.0.0.1"   # where AbletonOSC listens for commands
+OSC_SEND_PORT   = 11000         # AbletonOSC's command port
+OSC_LISTEN_PORT = 11001         # AbletonOSC's reply port — we listen here
+OSC_RATE_HZ     = 30.0          # default cap on continuous-route sends
+
 # Torus geometry
 R_TORE = 1.0             # major radius (metres)
 r_TORE = 0.05            # tube radius (metres)

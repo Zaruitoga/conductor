@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`conductor` is a Python asyncio orchestrator for a Cyr-wheel IMU project. It receives BNO08x sensor data from an ESP32 over UDP, interprets it into artistic signals (geometry, dynamics, and later events and states), and publishes the result to downstream outputs (Three.js visualiser, later OSC to Ableton, lighting). It can record sessions to CSV and replay them as if they were live.
+`conductor` is a Python asyncio orchestrator for a Cyr-wheel IMU project. It receives BNO08x sensor data from an ESP32 over UDP, interprets it into artistic signals (geometry, dynamics, events, and later states), and publishes the result to downstream outputs (Three.js visualiser, OSC to Ableton Live, later lighting). It can record sessions to CSV and replay them as if they were live.
 
 The chain is **movement → meaningful signal → creative output**, and the middle link — the `model/` package — is where the value is. Everything else exists to feed it reliably or to carry its output.
 
@@ -17,7 +17,7 @@ python3 main.py        # launches uvicorn → FastAPI control panel + REST API o
 The FastAPI lifespan boots all orchestrator subsystems (UDP receiver, WS server, ESP configurator, processing loop). Open `http://localhost:8000/` for the web control panel. There is no requirements file, build or lint setup. Dependencies are installed ad hoc:
 
 ```bash
-pip install numpy scipy websockets fastapi "uvicorn[standard]"   # stdlib: asyncio, struct, socket, csv, json
+pip install numpy scipy websockets fastapi "uvicorn[standard]" python-osc   # stdlib: asyncio, struct, socket, csv, json
 ```
 
 Requires Python 3.12+ (uses `X | None` union syntax and modern type hints).
@@ -30,7 +30,7 @@ There is no pytest in this environment, so `tests/` is dependency-free: each mod
 python3 -m tests.run
 ```
 
-The suite is fast (~2 s) and covers the properties that are expensive to discover late: the 32-bit clock rollover, the bus loss policies, the WebSocket outbox priority, the processing loop's survival, and the model checked against `simulator/motion.py`'s closed forms. **`test_model.py` is the one to extend when adding a signal** — the simulator prescribes attitude analytically and derives the gyro from that same attitude, so its `reference()` is a genuine external check rather than the model grading its own homework.
+The suite is fast (~2 s) and covers the properties that are expensive to discover late: the 32-bit clock rollover, the bus loss policies, the WebSocket outbox priority, the processing loop's survival, the model checked against `simulator/motion.py`'s closed forms, and the OSC bridge's transform/deadband/rate-cap contract (`tests/test_osc.py`). **`test_model.py` is the one to extend when adding a signal** — the simulator prescribes attitude analytically and derives the gyro from that same attitude, so its `reference()` is a genuine external check rather than the model grading its own homework. **`test_osc.py` calls `OscBridge._cadence_step()` directly rather than running `run()`'s real `asyncio.sleep` loop** — exactly like `test_playback_timing.py` for the replay pacing loop, a wall-clock sleep is not what that code can get wrong, so the test exercises the logic that runs on each wake instead of timing the wake itself.
 
 ### Control interface (REST API + web panel)
 
@@ -51,6 +51,24 @@ The 4 Hz snapshot carries the model's latest frame as a convenience, **not as a 
 Storage is one preallocated float64 ring per signal plus a shared timestamp ring (`DEFAULT_CAPACITY = 24 000` samples ≈ 60 s at 400 Hz, 4 min at 100 Hz). A ring of frame dicts would be tens of megabytes and slow to query. **The ring is cleared on `meta.topic == "reset"`** — a replay restarts the timeline at zero, and keeping the old samples would make the timestamps non-monotonic and every windowed query nonsense.
 
 The panel builds its signal picker and its parameter controls **entirely from `GET /api/model/schema`**: declaring a signal or a `PARAMS.declare(...)` is the whole wiring, there is no frontend list to keep in sync. An unavailable signal stays listed, greyed, with the reason next to it (`nécessite accel (active ACCEL)`) — knowing what to switch on beats the row simply not being there.
+
+#### OSC bridge (`osc/`, `js/panels/osc.js`)
+
+The point of this module is narrower than "emit OSC": it is that **remapping a signal or a detector's event to an OSC address never touches code**. The mapping lives entirely in `osc/routes.py`'s `RouteTable` — a JSON-backed CRUD table edited through `POST/PATCH/DELETE /api/osc/routes[/{id}]` and the panel's "OSC → Ableton Live" card — and is persisted as named profiles under `mappings/`, the same shape as `model/params.py`'s profiles under `params/`. `osc/targets.py` is a pure-data catalog of known AbletonOSC destinations (address + ordered index-argument template + natural output range); a route names a target instead of hardcoding a string, so adding a destination is one catalog entry, not a code change. `custom` is the escape hatch — any address, any argument template, including a Max for Live device. **Verify the catalog addresses against the installed AbletonOSC version** (github.com/ideoforms/AbletonOSC) — a mismatch costs one line there, not a redesign.
+
+A route's structural validity (`in_min != in_max`, `deadband >= 0`, …) is checked once, at create/update time. Whether its `source` still names a signal or detector that *currently exists* is a different, time-varying question, answered fresh on every `GET /api/osc/routes` — exactly like a signal's own availability — so a profile written before a signal was renamed still loads in full; the route simply reports why it cannot fire instead of vanishing or crashing the load.
+
+`osc/bridge.py`'s `OscBridge` treats the three bus topics as differently as `model/types.py` says they must be:
+
+- **`frame`** — inline `subscribe_sync`, latest-wins: no backlog is kept between sends, on purpose. A separately cadenced task wakes on its own schedule and sends whatever the *current* frame is — deliberately not the bus's own LOSSY policy, which still queues a bounded backlog between sends, exactly what is not wanted here.
+- **`event`** — `subscribe(policy=RELIABLE)`, sent the instant it arrives: **never rate-capped, never deadbanded**. A trigger is not a level the model samples every tick; missing one is the fault RELIABLE exists to prevent, and this bridge must not reintroduce a loss the bus already promised not to have.
+- **`meta`** — inline, only `topic == "reset"` matters: it clears the deadband memory, so the first post-reset value sends even if it equals the value sent just before the reset — the same reasoning `ScopeRing` uses to clear its ring on the same topic.
+
+**The send cadence is wall-clock, deliberately.** The cadenced sender uses `asyncio.sleep(1/rate_hz)`, never `ctx.t_us`. This is not an exception to "all time comes from `Tick.t_us`" (see below) — that rule protects the *model*'s reproducibility, and nothing in the bridge feeds back into it. Live absorbs a budget of messages per real second regardless of what the model's clock is doing: a replay at 4× must send OSC at the same rate a 1× replay would, not four times as many messages in a quarter of the time.
+
+A signal that is `None` — unavailable, or computed-but-nothing-to-report — sends nothing, never a `0`. A wheel that stops is not the same fact as a wheel reporting zero speed, and collapsing the two would leave a detector on the Live end unable to tell a real zero from silence. A continuous route also applies a **deadband**: a value that hasn't moved past it since the last send is skipped and counted (`stats.skipped_deadband`), which is what keeps a stationary wheel from flooding Live at `rate_hz` for nothing.
+
+`osc/live.py`'s `LiveLink` owns the AbletonOSC conversation: a fire-and-forget `send()` for the per-route sends and the MIDI-learn test sweep (`POST /api/osc/routes/{id}/test`, which bypasses deadband and rate cap on purpose — a test sweep should move smoothly regardless of the route's own live-performance settings), plus a request/reply path used only for discovery (track/device/parameter names, `GET/POST /api/osc/live[/refresh]`) and the periodic `/live/test` health probe that drives `online` in the snapshot. Discovery is cached and populated **on demand**, never eagerly — a set can have dozens of tracks, each with dozens of devices, and fetching every parameter up front would be a lot of round trips for names nobody has asked to see yet.
 
 **ESP health is unified** (`transport/esp_health.py`, `EspHealth`, snapshot key `health`). Single source of "is the ESP alive and behaving", fusing two signals so the UI shows one verdict (`online`/`degraded`/`offline`) instead of redundant indicators: (1) **presence + telemetry** from the periodic heartbeat packet (no heartbeat for `config.HEARTBEAT_TIMEOUT_S` ⇒ offline, independent of the sensor stream), and (2) **stream conformance** — it cross-checks the measured per-type rates (`LiveMonitor`) against what the configured ESP state (`configurator.state`, last CFG_ACK) says should arrive, flagging `missing`/`slow` streams (tolerance `config.RATE_TOLERANCE`). The panel renders this in one collapsible "ESP — Santé & connexion" card and drives the header status dot from `health.state`.
 
@@ -99,7 +117,7 @@ UDPReceiver ──▶ Queue ──▶ processing_loop ──▶ CSV write (raw, 
 PlaybackEngine ─┘                         └──▶ bus.publish(RAW)
                                           └──▶ model.feed() ──▶ bus.publish(FRAME | EVENT | META)
 
-bus subscribers:  WSServer (8081)  ·  [scope ring]  ·  [event log]  ·  [OSC bridge, later]
+bus subscribers:  WSServer (8081)  ·  ScopeRing  ·  [event log]  ·  OscBridge (→ AbletonOSC)
 ```
 
 `PlaybackEngine` replays a CSV onto the same Queue, so the model and every output see no difference from live — "same code live and replayed" is a structural property, not a discipline.
@@ -167,6 +185,27 @@ Tunable numbers are declared next to the code that reads them (`PARAMS.declare(.
 **Failure is contained at the node.** A signal that raises yields `None` for its own value, increments its own counter, and the frame goes out regardless. A detector's bug costs its own output and nothing else.
 
 **Numerical note:** prefer `atan2` to `acos` for angles. `lean_deg` used `acos(u_perp)`, which is ill-conditioned exactly where it matters most — near upright, its derivative diverges, so float noise became ~1e-6° of jitter on the signal an artist would want to read at a tenth of a degree. `atan2` brought that to 1.7e-14°.
+
+### Detectors (`model/detectors.py`, `model/signals/detectors.py`)
+
+A signal answers "what is true right now"; a detector answers "did something just happen". Mixing the two would pollute the frame — an event is not a continuous value, does not belong in `frame.signals`, and must not land in the scope's ring (which only ever sees `frame` and the reset `meta`, by design: an envelope is worth graphing, a trigger is worth counting).
+
+```python
+@detector("impact", source="accel_shock_ms2", needs=(ACCEL,),
+          params=(P_IMPACT_ON, P_IMPACT_OFF, P_IMPACT_REFRACTORY),
+          doc="Choc : l'accélération s'écarte brutalement de sa moyenne…")
+def impact(ctx):
+    return threshold("accel_shock_ms2", P_IMPACT_ON, P_IMPACT_OFF,
+                      P_IMPACT_REFRACTORY)(ctx)
+```
+
+A detector function is `fn(ctx) -> dict | None`; returning a dict fires an event with that dict as its payload, returning `None` — the overwhelmingly common case, since an event is rare by nature — means nothing happened this tick. `threshold()` builds the common shape: hysteresis (fire once past `on`, only re-arm once the value has dropped to `off` or below) plus a `refractory` cooldown, all three read fresh every tick via `ctx.param()` so a threshold is retunable live, mid-show, exactly like anything else `PARAMS` governs. Not every detector is threshold-shaped — `revolution` fires on a sign change in `spin_deg`'s frame-to-frame delta (a wrap, not a level), which is why `threshold()` is a helper `detector()` functions can use, not something the decorator forces on them.
+
+Detectors **share `ctx.state` with signals**, keyed by name — the engine already reuses one per-name namespace for both. A detector name colliding with a signal's would silently corrupt that signal's own memory (a running average, say), so `DetectorRegistry.add()` refuses a name already taken by a declared signal. `model/signals/__init__.py` imports `detectors` **last**, after every signal module, precisely so this check has every signal name to compare against by the time a detector is declared.
+
+Failure and availability are contained exactly like a signal's: a detector that raises costs only its own output (counted, logged, the frame goes out regardless), and one whose `needs` are not currently arriving simply never fires — nothing is queued up to fire the moment the sensor comes back, since each tick asks fresh.
+
+`Event.id` is monotonic **across the process lifetime**, unlike `Frame.seq` — it is what lets a consumer prove it missed nothing, so `model.reset()` clears every signal's and detector's state but deliberately leaves the engine's `_event_id` counter untouched.
 
 ### What the model emits
 

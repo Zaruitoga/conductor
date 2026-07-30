@@ -16,6 +16,7 @@ import { initEsp } from "./panels/esp.js";
 import { initPresets } from "./panels/presets.js";
 import { initScope } from "./panels/scope.js";
 import { initParams } from "./panels/params.js";
+import { initOsc } from "./panels/osc.js";
 import { initShortcuts } from "./shortcuts.js";
 
 initLayout();
@@ -30,6 +31,7 @@ initEsp();
 initPresets();
 initScope();
 initParams();
+initOsc();
 initShortcuts();
 
 refreshSessions();

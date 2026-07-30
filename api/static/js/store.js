@@ -11,7 +11,7 @@
 import { api } from "./api.js";
 
 export const SECTIONS = [
-  "status", "live", "health", "session", "recording", "playback", "esp", "model",
+  "status", "live", "health", "session", "recording", "playback", "esp", "model", "osc",
 ];
 
 /** Sections whose renderers rebuild forms — only emitted when they change. */
@@ -102,6 +102,7 @@ const pollFast = () => Promise.all([
   poll("health", "/api/health"),
   poll("playback", "/api/playback/status"),
   poll("model", "/api/model"),
+  poll("osc", "/api/osc"),
 ]);
 
 const pollSlow = () => Promise.all([

@@ -24,6 +24,7 @@
     <span>err <b id="m-err">0</b></span>
     <span>file <b id="m-queue">0</b></span>
     <span>ws <b id="m-ws">0</b></span>
+    <span>osc <b id="m-osc">0</b>/s</span>
   </div>
 
   <div class="topbar__spacer"></div>
@@ -384,6 +385,115 @@
         <div class="group__body">
           <div id="params-list"></div>
           <div class="empty empty--inline faint small" id="params-empty">Non chargé.</div>
+        </div>
+      </details>
+    </section>
+
+    <!-- ── OSC → Ableton Live ───────────────────────────────────────────── -->
+    <!-- Built from GET /api/model/schema (sources) and GET /api/osc/targets
+         (destinations): declaring a signal or a detector is the whole wiring,
+         there is no route list to keep in sync by hand. -->
+    <section class="panel" aria-labelledby="h-osc">
+      <div class="panel__head">
+        <h2 class="panel__title" id="h-osc">OSC → Ableton Live</h2>
+        <span class="spacer"></span>
+        <span class="badge" id="osc-live-badge">—</span>
+      </div>
+
+      <details class="group" open>
+        <summary>Réglages</summary>
+        <div class="group__body">
+          <div class="row">
+            <label class="switch">
+              <input id="osc-enabled" type="checkbox"> Actif
+            </label>
+            <span class="spacer"></span>
+            <button class="btn btn--danger" id="osc-panic">Panique</button>
+          </div>
+          <div class="field-grid">
+            <div class="field">
+              <label for="osc-host">Hôte AbletonOSC</label>
+              <input id="osc-host" type="text" placeholder="127.0.0.1">
+            </div>
+            <div class="field">
+              <label for="osc-port">Port</label>
+              <input id="osc-port" type="number" min="1" placeholder="11000">
+            </div>
+            <div class="field">
+              <label for="osc-rate">Débit max (Hz)</label>
+              <input id="osc-rate" type="number" min="1" step="1" placeholder="30">
+            </div>
+          </div>
+          <button class="btn btn--block" id="osc-apply-settings">Appliquer</button>
+          <div class="kv">
+            <div class="kv__item"><span class="kv__k">sortie</span><span class="kv__v" id="osc-out-hz">—</span></div>
+            <div class="kv__item"><span class="kv__k">envoyés</span><span class="kv__v" id="osc-sent">—</span></div>
+          </div>
+        </div>
+      </details>
+
+      <details class="group">
+        <summary>Découverte Live</summary>
+        <div class="group__body">
+          <div class="row">
+            <button class="btn btn--icon" id="osc-discover-tracks">↻ Découvrir les pistes</button>
+          </div>
+          <p class="small faint">
+            Les devices et paramètres se découvrent au fil de la création d'une
+            route, dès qu'une piste puis un device sont choisis.
+          </p>
+        </div>
+      </details>
+
+      <details class="group">
+        <summary>Mappings <span class="faint small">— profils nommés</span></summary>
+        <div class="group__body">
+          <div class="row">
+            <input id="osc-profile-name" type="text" placeholder="nom du mapping"
+                   aria-label="Nom du mapping" style="flex:1">
+            <button class="btn" id="osc-profile-save">Sauver</button>
+          </div>
+          <div class="row">
+            <select id="osc-profile-select" aria-label="Mapping à charger" style="flex:1"></select>
+            <button class="btn" id="osc-profile-load">Charger</button>
+          </div>
+        </div>
+      </details>
+
+      <details class="group" open>
+        <summary>Nouvelle route</summary>
+        <div class="group__body">
+          <div class="field-grid">
+            <div class="field">
+              <label for="osc-add-kind">Type</label>
+              <select id="osc-add-kind">
+                <option value="signal">Signal continu</option>
+                <option value="event">Événement</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="osc-add-source">Source</label>
+              <select id="osc-add-source"></select>
+            </div>
+            <div class="field">
+              <label for="osc-add-target">Destination</label>
+              <select id="osc-add-target"></select>
+            </div>
+          </div>
+          <div class="row" id="osc-add-args"></div>
+          <div class="field">
+            <label for="osc-add-address">Adresse OSC</label>
+            <input id="osc-add-address" type="text" placeholder="/live/…">
+          </div>
+          <button class="btn btn--primary btn--block" id="osc-add-submit">Ajouter la route</button>
+        </div>
+      </details>
+
+      <details class="group" open>
+        <summary>Routes <span class="faint small" id="osc-routes-count">0</span></summary>
+        <div class="group__body">
+          <div class="slots" id="osc-routes-list"></div>
+          <div class="empty empty--inline faint small" id="osc-routes-empty">Aucune route.</div>
         </div>
       </details>
     </section>
