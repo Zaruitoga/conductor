@@ -304,3 +304,21 @@ SIM=extern python3 main.py                 # …point the orchestrator at it
 **Motion model** (`simulator/motion.py`). Attitude is prescribed analytically as `R(t) = Rz(ψ)·Rx(90°+λ)·Rz(φ)` — the model's frame convention puts the wheel plane in the local xy-plane and the axle on local z, so `u_perp = cos λ` and `pz = R_TORE·cos λ + r_TORE` in closed form. The **gyro is central-differenced from that same attitude**, so ω_local and the emitted quaternion are consistent by construction: a downstream discrepancy is a transport or model bug, never bad data. Scenarios: `static`, `straight` (line at `(R_TORE + r_TORE)·φ̇` — note the rolling radius includes the tube), `coin` (closed circle, constant `pz`), `spiral` (varying lean, crosses the near-degenerate region). `WheelMotion.reference()` returns ground truth, with `px`/`py` only where a closed form genuinely exists — `static` and `straight`; elsewhere `pz` alone, and the `coin` check is that the trajectory closes.
 
 **Nominal behaviour only** — no fault injection. Killing the simulator already exercises the offline path, since the heartbeat simply stops. Boot config mirrors an ESP already set up for the wheel model (GYRO + GAME_RV at 100 Hz, super 0 = `[0, 6]`). Emission uses one asyncio task per stream on absolute deadlines; `asyncio.sleep` resolution caps faithful rates at roughly 200–500 Hz on macOS, and rates sag under CPU contention (still inside `RATE_TOLERANCE`).
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues on `Zaruitoga/conductor`, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default 5-role vocabulary (needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout: `CONTEXT.md` + `docs/adr/` at the repo root (created lazily as terms/decisions arise). See `docs/agents/domain.md`.
+
+### Development workflow
+
+One branch per ticket; backend-only changes auto-merge on a green `tests/run.py`, anything touching `api/static/` waits for manual review. New features go through a ticket, bugfixes don't. See `docs/agents/workflow.md`.
