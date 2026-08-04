@@ -1,12 +1,15 @@
 // ── Keyboard shortcuts ──────────────────────────────────────────────────────
 // Ignored while typing, and while any modifier is held, so they never fight
 // with normal text entry or browser shortcuts.
+//
+// The action shortcuts work from any tab: hidden tabs keep their DOM, so `R`
+// starts a recording while you are looking at the OSC routes.
 
 import { $ } from "./dom.js";
 import { toggleRecording, putMarker } from "./panels/recording.js";
 import { togglePlayback, stopPlayback, toggleLoop } from "./panels/playback.js";
 import { closeAllEditors } from "./panels/takes.js";
-import { toggleConfig } from "./panels/layout.js";
+import { showTab, TABS } from "./tabs.js";
 
 const TYPING = new Set(["INPUT", "TEXTAREA", "SELECT"]);
 
@@ -33,6 +36,13 @@ export function initShortcuts() {
     if (isTyping(e.target)) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
 
+    // 1–5 select a workspace, in the order they appear in the tablist.
+    if (e.key >= "1" && e.key <= String(TABS.length)) {
+      e.preventDefault();
+      showTab(TABS[Number(e.key) - 1]);
+      return;
+    }
+
     switch (e.key) {
       case "r": case "R":
         e.preventDefault(); toggleRecording(); break;
@@ -42,8 +52,6 @@ export function initShortcuts() {
         e.preventDefault(); stopPlayback(); break;
       case "l": case "L":
         e.preventDefault(); toggleLoop(); break;
-      case "c": case "C":
-        e.preventDefault(); toggleConfig(); break;
       case "?":
         e.preventDefault(); openHelp(); break;
       case " ":

@@ -9,6 +9,7 @@ import {
 import { on, state } from "../store.js";
 import { api, action } from "../api.js";
 import { refreshSessions } from "./playback.js";
+import { showTab } from "../tabs.js";
 
 // The comments textarea is refilled only when the session identity changes,
 // so an edit in progress is never clobbered by an unrelated metadata update.
@@ -92,9 +93,12 @@ export function initSession() {
   });
 
   // ── Commands ──────────────────────────────────────────────────────────────
+  // The form is on this tab now, so this is a scroll-and-focus rather than the
+  // cross-module reach into the aside's collapsed state it used to be.
   $("strip-open").onclick = () => {
-    document.getElementById("shell").dataset.configCollapsed = "0";
+    showTab("captation");
     $("sess-title").focus();
+    $("sess-title").scrollIntoView({ block: "nearest" });
   };
 
   $("session-open").onclick = action(async () => {

@@ -82,12 +82,39 @@ No build step, no framework, no CDN — plain ES modules, so it works offline. `
 - **`js/dom.js`** — the helpers that make a 4 Hz push non-destructive. `setText`/`setAttr` write only on change (so a text selection survives); `keyed()` reconciles a list by key instead of rebuilding it; `syncControl`/`trackDirty`/`clearDirty` **never overwrite a control the user is focused on or has edited but not yet submitted**. This last point matters: an ESP slot's checkbox or Hz field holds uncommitted input, and section-level change-gating alone does not protect it.
 - **`js/panels/*.js`** — one module per region, each rendering from its snapshot section and wiring its own REST commands.
 - **`js/api.js`** — `api()` fetch wrapper, `action()` command wrapper, stacking toasts.
+- **`js/tabs.js`** — the workspace tabs: `showTab`/`activeTab`/`onTabChange`, ARIA tablist with arrow-key navigation, active tab persisted in `localStorage` (an unknown name falls back to `scene` rather than showing a blank page).
 
 Two sections, `session` and `esp`, are **change-gated in the store** because they drive form rebuilds; everything else re-renders every tick, which is safe given the write helpers above.
 
-The layout is task-oriented rather than a uniform card grid: a persistent operations column (session strip, health, scope, live, recording, playback, takes) and a collapsible configuration aside (ESP slots, super-slots, presets, model parameters, session metadata). Breakpoints at 1180 px (aside moves above) and 900 px (single column). Keyboard shortcuts live in `js/shortcuts.js` (`R` rec, `M` marker, `Space` play/pause, `S` stop, `L` loop, `C` config, `?` help) and are suppressed while typing.
+##### Workspace tabs
+
+The panel serves three jobs that never happen at once — rigging, capture, creation — and they used to compete for one page: 11 top-level panels on screen at once, an ops column ~1700 px tall (so *Enregistrement* was below the fold), and a `position: sticky` aside 2500–3000 px tall, whose bottom could not be reached. Each job now gets a tab:
+
+| Tab | Contents |
+|---|---|
+| **Scène** (default) | Recording control, OSC output + panic, wheel position, ESP telemetry, playback transport, read-only scope strip |
+| **Captation** | Session strip and form, next-take metadata, playback browser, takes list |
+| **Signaux** | Scope + picker, model parameters — the tuning loop, side by side |
+| **Sortie** | OSC settings, mappings, routes |
+| **Config** | ESP32 slots, super-slots, host |
+
+**Hidden tabs keep their DOM**, so every module renders unconditionally and `R` starts a recording while you are looking at the OSC routes. What a module may *not* do is measure a hidden element — `clientWidth` is 0 under `hidden` — so anything that measures subscribes to `onTabChange` and skips invisible work.
+
+**Each fact lives in exactly one tab.** Only the verdict (connection dot, mode badge) is repeated, in the persistent topbar, because it must be true everywhere. Two consequences worth keeping: the Scène transport appears **only while `playback.active`** (the engine has no "loaded but not started" state, so picking a take stays in Captation), and OSC *panic* lives on Scène only — it is a show-time gesture, not a setting.
+
+Breakpoints at 1240 px and 900 px. Because `grid-template-areas` implies a column count, **both the with- and without-transport variants are restated at every breakpoint**; changing only `grid-template-columns` would disagree with the areas.
+
+Keyboard shortcuts (`js/shortcuts.js`, suppressed while typing): `1`–`5` tabs, `R` rec, `M` marker, `Space` play/pause, `S` stop, `L` loop, `?` help.
 
 The playback progress bar is **read-only by design** — `PlaybackEngine` has no seek. Pause/resume state is always read back from `playback.paused`, never applied optimistically.
+
+##### Two things that were deleted, and why
+
+**Per-sensor live cards.** They duplicated the health streams table — same rate, same sparkline, same client-side ring buffer — and their raw field chips (`gyro_x = 0.737` at 4 Hz) were debug output: unreadable while the wheel moves, and nothing downstream acts on a raw gyro component, which is what `model/` is for. What survives is the wheel position, which is model output and the one thing the streams table cannot show.
+
+**ESP presets (`localStorage`).** The only feature with no backend counterpart. It could not travel to another machine, so it could never be part of a show runbook — and applying one fired up to ten sequential ACK-blocking POSTs that could half-fail, leaving the ESP in a state no preset described. Model params (`params/`) and OSC mappings (`mappings/`) are server-side; if ESP presets are ever wanted, they belong there.
+
+The health *state* is likewise rendered in one place now (the topbar). It used to appear three times at once — topbar, panel badge, and an "État" tile. The streams table follows the verdict: open while the ESP misbehaves, closed while it does not, and left alone once the user works the disclosure themselves. Note that `<details>`'s `toggle` event is **asynchronous**, so distinguishing our own writes from a click needs a comparison against the last value written, not a flag cleared on the next line.
 
 ### 3D visualiser (`/viz/`)
 

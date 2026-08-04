@@ -66,7 +66,6 @@
   --ease: cubic-bezier(.2, .6, .3, 1);
   --ring: 0 0 0 2px var(--bg-0), 0 0 0 4px var(--accent);
 
-  --aside-w: 380px;
   --topbar-h: 52px;
 }
 
@@ -184,59 +183,144 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .mode.REC  { background: var(--rec); color: #fff; }
 .mode.PLAY { background: var(--accent); color: #fff; }
 
-/* ── Shell layout ──────────────────────────────────────────────────────── */
-.shell {
+/* ── Tabs ──────────────────────────────────────────────────────────────── */
+.tabs {
+  display: flex;
+  gap: 2px;
+  background: var(--bg-0);
+  padding: 3px;
+  border-radius: var(--r-2);
+  border: 1px solid var(--line);
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  background: transparent;
+  border: none;
+  border-radius: var(--r-1);
+  padding: 5px 12px;
+  font: 500 var(--t-md)/1.4 var(--f-sans);
+  color: var(--fg-dim);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.tab:hover { background: var(--bg-2); color: var(--fg); }
+.tab[aria-selected="true"] {
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+.tab kbd {
+  font-size: 10px;
+  padding: 1px 4px;
+  border-bottom-width: 1px;
+  opacity: .6;
+  background: #0003;
+  border-color: #fff3;
+  color: inherit;
+}
+.tab[aria-selected="true"] kbd { opacity: .8; }
+
+/* ── Workspaces ────────────────────────────────────────────────────────── */
+/* One job on screen at a time. Each workspace sets its own grid; none of them
+   is a generic card wall, because the panels in each have different weights. */
+.workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--aside-w);
   gap: var(--sp-4);
   max-width: 1800px;
-  margin-inline: auto;      /* the old layout was stuck to the left */
+  margin-inline: auto;
   padding: var(--sp-4);
   align-items: start;
 }
 
-.shell[data-config-collapsed="1"] { grid-template-columns: minmax(0, 1fr); }
-.shell[data-config-collapsed="1"] .aside { display: none; }
+/* Scène — the show view. Status and transport, read-mostly, must fit without
+   scrolling on a 1600×900 screen. */
+/* Every scene layout comes in two variants: with the playback transport, and
+   without. A hidden transport is display:none and would otherwise leave its
+   grid cell as a hole, so health takes the width back. Both variants must be
+   restated at each breakpoint — `grid-template-areas` implies a column count,
+   so changing only `grid-template-columns` would not agree with it. */
+.workspace.scene {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-areas:
+    "rec    osc    pose"
+    "health health transport"
+    "strip  strip  strip";
+}
+.workspace.scene:has(#scene-transport[hidden]) {
+  grid-template-areas:
+    "rec    osc    pose"
+    "health health health"
+    "strip  strip  strip";
+}
+.scene > .area-rec       { grid-area: rec; }
+.scene > .area-osc       { grid-area: osc; }
+.scene > .area-pose      { grid-area: pose; }
+.scene > .area-health    { grid-area: health; }
+.scene > .area-transport { grid-area: transport; }
+.scene > .area-strip     { grid-area: strip; }
 
-.ops {
-  display: grid;
-  gap: var(--sp-4);
+/* Captation — session and takes. */
+.workspace.captation {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-template-areas:
-    "session session"
-    "health  health"
-    "scope   scope"
-    "live    live"
-    "rec     play"
-    "takes   takes";
+    "session  session"
+    "sess     takemeta"
+    "play     takes";
 }
+.captation > .area-session  { grid-area: session; }
+.captation > .area-sess     { grid-area: sess; }
+.captation > .area-takemeta { grid-area: takemeta; }
+.captation > .area-play     { grid-area: play; }
+.captation > .area-takes    { grid-area: takes; }
 
-.ops > .area-session { grid-area: session; }
-.ops > .area-health  { grid-area: health; }
-.ops > .area-scope   { grid-area: scope; }
-.ops > .area-live    { grid-area: live; }
-.ops > .area-rec     { grid-area: rec; }
-.ops > .area-play    { grid-area: play; }
-.ops > .area-takes   { grid-area: takes; }
-
-.aside {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-4);
-  position: sticky;
-  top: calc(var(--topbar-h) + var(--sp-4));
+/* Signaux — the tuning loop: watch on the left, tune on the right. */
+.workspace.signaux {
+  grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr);
+  grid-template-areas: "scope params";
 }
+.signaux > .area-scope  { grid-area: scope; }
+.signaux > .area-params { grid-area: params; }
 
-@media (max-width: 1180px) {
-  .shell { grid-template-columns: minmax(0, 1fr); }
-  .aside { position: static; order: -1; }
+/* Sortie and Config are single dense forms — a wide one is unreadable. */
+.workspace.sortie,
+.workspace.config { grid-template-columns: minmax(0, 1fr); max-width: 980px; }
+
+@media (max-width: 1240px) {
+  .workspace.scene {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-areas:
+      "rec    osc"
+      "pose   transport"
+      "health health"
+      "strip  strip";
+  }
+  .workspace.scene:has(#scene-transport[hidden]) {
+    grid-template-areas:
+      "rec    osc"
+      "pose   pose"
+      "health health"
+      "strip  strip";
+  }
+  .workspace.signaux {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "scope" "params";
+  }
 }
 
 @media (max-width: 900px) {
-  .ops {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-areas: "session" "health" "scope" "live" "rec" "play" "takes";
+  .workspace { grid-template-columns: minmax(0, 1fr) !important; }
+  .workspace.scene,
+  .workspace.scene:has(#scene-transport[hidden]) {
+    grid-template-areas: "rec" "osc" "pose" "transport" "health" "strip";
   }
+  .workspace.captation {
+    grid-template-areas: "session" "sess" "takemeta" "play" "takes";
+  }
+  .tabs { order: 10; width: 100%; overflow-x: auto; }
 }
 
 /* ── Panel ─────────────────────────────────────────────────────────────── */
@@ -265,6 +349,14 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 }
 
 .panel__head .spacer { flex: 1; }
+
+/* Controls in a panel header size to their content — the global `width: 100%`
+   on form fields makes them swallow the whole bar otherwise. */
+.panel__head :where(select, input[type="text"], input[type="number"]) {
+  width: auto;
+  flex: none;
+}
+.panel__head .switch { flex: none; white-space: nowrap; }
 .panel__body { padding: var(--sp-4); }
 .panel__body > * + * { margin-top: var(--sp-3); }
 
@@ -675,25 +767,6 @@ table.table td.spark-cell { width: 128px; padding-block: 0; }
 .strip__meta { display: flex; gap: var(--sp-4); font-size: var(--t-sm); color: var(--fg-dim); flex-wrap: wrap; }
 .strip__meta b { color: var(--fg); font-weight: 600; }
 
-/* ── Live sensors ──────────────────────────────────────────────────────── */
-.sensors {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: var(--sp-3);
-}
-.sensor {
-  background: var(--bg-2);
-  border: 1px solid var(--line);
-  border-radius: var(--r-2);
-  padding: var(--sp-3);
-  min-width: 0;
-}
-.sensor__head { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-2); }
-.sensor__name { font-size: var(--t-md); font-weight: 600; font-family: var(--f-mono); }
-.sensor__rate { font-size: var(--t-sm); color: var(--fg-dim); font-variant-numeric: tabular-nums; }
-.sensor__head .spacer { flex: 1; }
-.sensor .spark { width: 64px; height: 18px; }
-
 /* ── Slot rows (ESP config) ────────────────────────────────────────────── */
 .slots { display: flex; flex-direction: column; gap: var(--sp-1); }
 
@@ -768,6 +841,14 @@ kbd {
   display: block;
   width: 100%;
   height: 220px;
+}
+
+/* The Scène strip: same module state (selection, colours, window), read-only
+   and short enough to sit under the status panels without pushing them off. */
+.scope--compact #scope-strip {
+  display: block;
+  width: 100%;
+  height: 110px;
 }
 
 .legend {

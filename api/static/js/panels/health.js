@@ -1,15 +1,17 @@
 // ── ESP health: telemetry tiles + stream conformance table ──────────────────
 // Source of truth is transport/esp_health.py (EspHealth.snapshot), which fuses
 // heartbeat presence with measured-vs-configured stream rates.
+//
+// `health.state` is rendered by the topbar and nowhere else — it used to appear
+// three times at once (topbar, panel badge, "État" tile). What lives here is
+// only what the verdict cannot tell you: the telemetry, and which stream is
+// misbehaving.
 
 import {
-  $, h, setText, setClass, setHidden, setAttr,
+  $, h, setText, setClass, setHidden,
   keyed, makeSpark, updateSpark, fmtUptime, fmtCount, fmtNum,
 } from "../dom.js";
 import { on, historyOf } from "../store.js";
-
-const STATE_BADGE = { online: "ok", degraded: "warn", offline: "bad" };
-const STATE_LABEL = { online: "En ligne", degraded: "Dégradé", offline: "Hors ligne" };
 
 const STATUS_LABEL = { ok: "ok", slow: "lent", missing: "absent", unexpected: "inattendu" };
 const STATUS_BADGE = { ok: "ok", slow: "warn", missing: "bad", unexpected: "" };
@@ -21,11 +23,7 @@ function tile(label, value, { tone = "", unit = "", meter = null } = {}) {
 
 function buildTiles(health) {
   const hb = health.heartbeat;
-  const state = health.state || "offline";
-
-  const tiles = [
-    tile("État", STATE_LABEL[state] || state, { tone: STATE_BADGE[state] }),
-  ];
+  const tiles = [];
 
   if (!hb) {
     tiles.push(tile("Heartbeat", "aucun", { tone: "bad" }));
@@ -108,39 +106,25 @@ function updateStreamRow(tr, s) {
   setClass(badge, "badge" + (tone ? " badge--" + tone : ""));
 }
 
-// ── Network ─────────────────────────────────────────────────────────────────
-
-function kvItem(k, v) {
-  return h("div.kv__item", null, h("span.kv__k", null, k), h("span.kv__v", null, v));
-}
-
-function renderNet(status) {
-  const box = $("esp-net");
-  const e = status.esp_net;
-  if (!e) return;
-
-  const items = [
-    ["hostname", e.hostname],
-    ["ip", e.resolved ? e.ip : "non résolu"],
-    ["source des données", status.udp.last_esp_ip || "—"],
-  ];
-
-  keyed(box, items, (i) => i[0],
-    () => kvItem("", ""),
-    (node, [k, v]) => {
-      setText(node.children[0], k);
-      setText(node.children[1], v);
-    });
-}
-
 export function initHealth() {
+  // The table follows the verdict: open while the ESP misbehaves, closed while
+  // it does not. Latching it open on the first bad tick was worse — a momentary
+  // rate dip is common and left it open for the rest of the session.
+  // Once the user works the disclosure themselves we stop driving it, so a
+  // recovery cannot shut the table under someone who is reading it.
+  const box = $("health-streams-box");
+  let userOwns = false;
+  let lastAuto = box.open;
+
+  // `toggle` fires asynchronously, so a "we are writing this" flag would always
+  // have been cleared by the time the listener ran. Comparing against the value
+  // we last wrote is synchronous-safe: only a click can leave them different.
+  box.addEventListener("toggle", () => {
+    if (box.open !== lastAuto) userOwns = true;
+  });
+
   on("health", (health) => {
     if (!health) return;
-    const state = health.state || "offline";
-
-    const badge = $("health-badge");
-    setText(badge, STATE_LABEL[state] || state);
-    setClass(badge, "badge badge--" + (STATE_BADGE[state] || "bad"));
 
     keyed($("health-tiles"), buildTiles(health), (t) => t.label, createTile, updateTile);
 
@@ -149,10 +133,11 @@ export function initHealth() {
     keyed(tbody, streams, (s) => s.type, createStreamRow, updateStreamRow);
     setHidden($("health-streams"), !streams.length);
     setHidden($("health-streams-empty"), streams.length > 0);
-  });
 
-  on("status", (status) => {
-    if (!status) return;
-    renderNet(status);
+    const wanted = (health.state || "offline") !== "online";
+    if (!userOwns && box.open !== wanted) {
+      lastAuto = wanted;
+      box.open = wanted;
+    }
   });
 }

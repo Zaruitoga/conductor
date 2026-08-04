@@ -9,6 +9,8 @@
 <body>
 
 <!-- ══ Topbar ══════════════════════════════════════════════════════════════ -->
+<!-- Carries only what must be true on every tab: the connection verdict, the
+     mode, and alerts that are silent when nothing is wrong. -->
 <header class="topbar">
   <h1 class="topbar__brand">Conductor</h1>
 
@@ -19,52 +21,121 @@
 
   <span class="mode" id="mode-badge">IDLE</span>
 
-  <div class="topbar__metrics" aria-label="Compteurs de transport">
-    <span>rx <b id="m-rx">0</b></span>
-    <span>err <b id="m-err">0</b></span>
-    <span>file <b id="m-queue">0</b></span>
+  <div class="topbar__metrics" aria-label="Alertes de transport">
+    <span id="m-err-box" hidden>err <b id="m-err">0</b></span>
+    <span id="m-queue-box" hidden>file <b id="m-queue">0</b></span>
     <span>ws <b id="m-ws">0</b></span>
-    <span>osc <b id="m-osc">0</b>/s</span>
   </div>
+
+  <nav class="tabs" id="tablist" role="tablist" aria-label="Espaces de travail">
+    <button class="tab" id="tabbtn-scene" role="tab" aria-controls="tab-scene"
+            aria-selected="true">Scène <kbd>1</kbd></button>
+    <button class="tab" id="tabbtn-captation" role="tab" aria-controls="tab-captation"
+            aria-selected="false" tabindex="-1">Captation <kbd>2</kbd></button>
+    <button class="tab" id="tabbtn-signaux" role="tab" aria-controls="tab-signaux"
+            aria-selected="false" tabindex="-1">Signaux <kbd>3</kbd></button>
+    <button class="tab" id="tabbtn-sortie" role="tab" aria-controls="tab-sortie"
+            aria-selected="false" tabindex="-1">Sortie <kbd>4</kbd></button>
+    <button class="tab" id="tabbtn-config" role="tab" aria-controls="tab-config"
+            aria-selected="false" tabindex="-1">Config <kbd>5</kbd></button>
+  </nav>
 
   <div class="topbar__spacer"></div>
 
-  <button class="btn btn--icon" id="config-toggle" aria-expanded="true"
-          aria-controls="aside" title="Replier la configuration (C)">Config</button>
   <button class="btn btn--icon" id="help-btn" aria-label="Raccourcis clavier" title="Raccourcis (?)">?</button>
   <a class="topbar__link" id="viz-link" href="/viz/" target="_blank" rel="noopener">Visualisation 3D ↗</a>
 </header>
 
-<div class="shell" id="shell">
+<!-- ══ Scène — surveillance et transport ═══════════════════════════════════ -->
+<div class="workspace scene" id="tab-scene" role="tabpanel" aria-labelledby="tabbtn-scene">
 
-  <!-- ══ Opérations ═══════════════════════════════════════════════════════ -->
-  <div class="ops">
+  <!-- ── Enregistrement : le contrôle, pas les métadonnées ────────────────── -->
+  <section class="panel area-rec" aria-labelledby="h-rec">
+    <div class="panel__head">
+      <h2 class="panel__title" id="h-rec">Enregistrement</h2>
+      <span class="spacer"></span>
+      <span class="badge" id="rec-badge">Inactif</span>
+    </div>
+    <div class="panel__body">
+      <div class="empty" id="rec-no-session">Ouvre une session dans l'onglet Captation.</div>
 
-    <!-- ── Bandeau session ──────────────────────────────────────────────── -->
-    <div class="strip area-session strip--idle" id="session-strip">
-      <div>
-        <div class="strip__title" id="strip-title">Aucune session</div>
-        <div class="strip__meta" id="strip-meta">
-          <span class="faint">Ouvre une session pour enregistrer des takes.</span>
+      <div id="rec-controls" hidden>
+        <div class="row">
+          <button class="btn btn--lg btn--primary" id="rec-toggle">Démarrer</button>
+          <button class="btn" id="rec-marker" disabled>Marqueur sync</button>
+        </div>
+        <div class="tiles">
+          <div class="tile">
+            <div class="tile__label">Take en cours</div>
+            <div class="tile__value" id="rec-take" style="font-size:var(--t-md)">—</div>
+          </div>
+          <div class="tile">
+            <div class="tile__label">Paquets</div>
+            <div class="tile__value" id="rec-count">0</div>
+          </div>
         </div>
       </div>
-      <div class="spacer" style="flex:1"></div>
-      <button class="btn btn--primary" id="strip-open">Ouvrir une session</button>
-      <button class="btn btn--danger" id="session-close" hidden>Clore la session</button>
     </div>
+  </section>
 
-    <!-- ── Santé ESP ────────────────────────────────────────────────────── -->
-    <section class="panel area-health" aria-labelledby="h-health">
-      <div class="panel__head">
-        <h2 class="panel__title" id="h-health">ESP — Santé &amp; connexion</h2>
-        <span class="spacer"></span>
-        <span class="badge" id="health-badge">—</span>
+  <!-- ── Sortie OSC : surveillance + panique ──────────────────────────────── -->
+  <!-- Panique vit ici et nulle part ailleurs : c'est un geste de spectacle,
+       pas un réglage. Les réglages sont dans l'onglet Sortie. -->
+  <section class="panel area-osc" aria-labelledby="h-scene-osc">
+    <div class="panel__head">
+      <h2 class="panel__title" id="h-scene-osc">Sortie OSC</h2>
+      <span class="spacer"></span>
+      <span class="badge" id="osc-live-badge">—</span>
+    </div>
+    <div class="panel__body">
+      <div class="tiles">
+        <div class="tile">
+          <div class="tile__label">Débit</div>
+          <div class="tile__value" id="osc-out-hz">—</div>
+        </div>
+        <div class="tile">
+          <div class="tile__label">Envoyés</div>
+          <div class="tile__value" id="osc-sent">—</div>
+        </div>
       </div>
-      <div class="panel__body">
-        <div class="tiles" id="health-tiles"></div>
+      <button class="btn btn--danger btn--block" id="osc-panic">Panique — tout couper</button>
+    </div>
+  </section>
 
-        <div>
-          <div class="panel__section">Flux — mesuré vs configuré</div>
+  <!-- ── Position de la roue ──────────────────────────────────────────────── -->
+  <section class="panel area-pose" aria-labelledby="h-pose">
+    <div class="panel__head">
+      <h2 class="panel__title" id="h-pose">Position du centre de la roue</h2>
+    </div>
+    <div class="panel__body">
+      <div class="tiles" id="torus-tiles">
+        <div class="tile tile--lg tile--empty">
+          <div class="tile__label">x</div><div class="tile__value" id="torus-x">—</div>
+        </div>
+        <div class="tile tile--lg tile--empty">
+          <div class="tile__label">y</div><div class="tile__value" id="torus-y">—</div>
+        </div>
+        <div class="tile tile--lg tile--empty">
+          <div class="tile__label">z</div><div class="tile__value" id="torus-z">—</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Santé ESP ────────────────────────────────────────────────────────── -->
+  <!-- Le verdict est dans la topbar ; ici la télémétrie. La table des flux est
+       repliée tant que l'ESP va bien — c'est le seul endroit qui dit QUEL flux
+       ne fait pas ce qu'on a demandé, mais on ne le veut que dans ce cas. -->
+  <section class="panel area-health" aria-labelledby="h-health">
+    <div class="panel__head">
+      <h2 class="panel__title" id="h-health">ESP — Télémétrie</h2>
+    </div>
+    <div class="panel__body">
+      <div class="tiles" id="health-tiles"></div>
+
+      <details class="group" id="health-streams-box">
+        <summary>Flux — mesuré vs configuré</summary>
+        <div class="group__body">
           <table class="table" id="health-streams">
             <thead>
               <tr>
@@ -79,433 +150,83 @@
           </table>
           <div class="empty" id="health-streams-empty" hidden>Aucun flux observé.</div>
         </div>
+      </details>
+    </div>
+  </section>
 
-        <div>
-          <div class="panel__section">Réseau</div>
-          <div class="kv" id="esp-net"></div>
-        </div>
+  <!-- ── Transport playback ───────────────────────────────────────────────── -->
+  <!-- Visible uniquement pendant une lecture : PlaybackEngine n'a pas d'état
+       « chargé mais pas lancé », donc choisir un take se fait en Captation. -->
+  <section class="panel area-transport" id="scene-transport" aria-labelledby="h-transport" hidden>
+    <div class="panel__head">
+      <h2 class="panel__title" id="h-transport">Lecture en cours</h2>
+      <span class="spacer"></span>
+      <span class="badge badge--info" id="scene-play-badge">▶</span>
+    </div>
+    <div class="panel__body">
+      <div class="mono small" id="scene-play-take">—</div>
+      <div class="row">
+        <button class="btn" id="scene-play-pause" aria-pressed="false">Pause</button>
+        <button class="btn btn--danger" id="scene-play-stop">Stop</button>
       </div>
-    </section>
-
-    <!-- ── Données live ─────────────────────────────────────────────────── -->
-    <section class="panel area-live" aria-labelledby="h-live">
-      <div class="panel__head">
-        <h2 class="panel__title" id="h-live">Données live</h2>
+      <div class="progress" role="progressbar" id="scene-play-progress"
+           aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div class="progress__bar" id="scene-play-bar"></div>
+      </div>
+      <div class="row small faint">
+        <span id="scene-play-elapsed">0.0 s</span>
         <span class="spacer"></span>
-        <span class="badge" id="live-badge">—</span>
+        <span id="scene-play-total">0.0 s</span>
       </div>
-      <div class="panel__body">
-        <div>
-          <div class="panel__section">Position du centre de la roue</div>
-          <div class="tiles" id="torus-tiles">
-            <div class="tile tile--lg tile--empty">
-              <div class="tile__label">x</div><div class="tile__value" id="torus-x">—</div>
-            </div>
-            <div class="tile tile--lg tile--empty">
-              <div class="tile__label">y</div><div class="tile__value" id="torus-y">—</div>
-            </div>
-            <div class="tile tile--lg tile--empty">
-              <div class="tile__label">z</div><div class="tile__value" id="torus-z">—</div>
-            </div>
-          </div>
-        </div>
+    </div>
+  </section>
 
-        <div>
-          <div class="panel__section">Capteurs</div>
-          <div class="sensors" id="sensors"></div>
-          <div class="empty" id="sensors-empty">Aucune donnée reçue.</div>
-        </div>
+  <!-- ── Bande scope, lecture seule ───────────────────────────────────────── -->
+  <!-- Même sélection, mêmes couleurs et même fenêtre que l'onglet Signaux :
+       c'est le même état de module, pas une configuration parallèle. -->
+  <section class="panel area-strip" aria-labelledby="h-strip">
+    <div class="panel__head">
+      <h2 class="panel__title" id="h-strip">Signaux</h2>
+      <span class="spacer"></span>
+      <span class="small faint">réglages dans l'onglet Signaux</span>
+    </div>
+    <div class="panel__body">
+      <div class="scope scope--compact">
+        <canvas id="scope-strip" role="img"
+                aria-label="Aperçu des signaux sélectionnés"></canvas>
       </div>
-    </section>
+      <div class="legend" id="scope-strip-legend"></div>
+      <div class="empty" id="scope-strip-empty">Aucun signal sélectionné.</div>
+    </div>
+  </section>
+</div>
 
-    <!-- ── Scope ────────────────────────────────────────────────────────── -->
-    <!-- Traces at the model's own rate (GET /api/model/history), not from the
-         4 Hz snapshot: at 4 Hz you see one sample in twenty-five, which is
-         useless for deciding where a detection should fire. -->
-    <section class="panel area-scope" aria-labelledby="h-scope">
-      <div class="panel__head">
-        <h2 class="panel__title" id="h-scope">Signaux</h2>
-        <span class="spacer"></span>
-        <label class="switch small">
-          <input id="scope-auto" type="checkbox"> échelle auto
-        </label>
-        <select id="scope-window" aria-label="Fenêtre de temps">
-          <option value="5">5 s</option>
-          <option value="10" selected>10 s</option>
-          <option value="30">30 s</option>
-          <option value="60">60 s</option>
-        </select>
-        <button class="btn btn--icon" id="scope-toggle"
-                aria-expanded="false" aria-controls="scope-picker-box">Choisir…</button>
+<!-- ══ Captation — session, takes, relecture ═══════════════════════════════ -->
+<div class="workspace captation" id="tab-captation" role="tabpanel"
+     aria-labelledby="tabbtn-captation" hidden>
+
+  <!-- ── Bandeau session ──────────────────────────────────────────────────── -->
+  <div class="strip area-session strip--idle" id="session-strip">
+    <div>
+      <div class="strip__title" id="strip-title">Aucune session</div>
+      <div class="strip__meta" id="strip-meta">
+        <span class="faint">Ouvre une session pour enregistrer des takes.</span>
       </div>
-      <div class="panel__body">
-        <div class="scope">
-          <canvas id="scope-canvas" role="img"
-                  aria-label="Tracé des signaux sélectionnés"></canvas>
-        </div>
-        <div class="legend" id="scope-legend"></div>
-        <div class="empty" id="scope-empty">Aucun signal sélectionné.</div>
-
-        <div id="scope-picker-box" hidden>
-          <div class="row">
-            <span class="small faint">Un signal indisponible indique ce qu'il faut activer.</span>
-            <span class="spacer"></span>
-            <button class="btn btn--icon" id="scope-clear">Tout décocher</button>
-          </div>
-          <div id="scope-picker"></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ── Enregistrement ───────────────────────────────────────────────── -->
-    <section class="panel area-rec" aria-labelledby="h-rec">
-      <div class="panel__head">
-        <h2 class="panel__title" id="h-rec">Enregistrement</h2>
-        <span class="spacer"></span>
-        <span class="badge" id="rec-badge">Inactif</span>
-      </div>
-      <div class="panel__body">
-        <div class="empty" id="rec-no-session">Ouvre une session pour enregistrer.</div>
-
-        <div id="rec-controls" hidden>
-          <div class="tiles">
-            <div class="tile">
-              <div class="tile__label">Take en cours</div>
-              <div class="tile__value" id="rec-take" style="font-size:var(--t-md)">—</div>
-            </div>
-            <div class="tile">
-              <div class="tile__label">Paquets</div>
-              <div class="tile__value" id="rec-count">0</div>
-            </div>
-          </div>
-
-          <div class="field-grid">
-            <div class="field">
-              <label for="take-title">Titre</label>
-              <input id="take-title" type="text" placeholder="auto : take NNN">
-            </div>
-            <div class="field">
-              <label for="take-performer">Performeur</label>
-              <input id="take-performer" type="text">
-            </div>
-            <div class="field">
-              <label for="take-figures">Figures</label>
-              <input id="take-figures" type="text" placeholder="séparées par des virgules">
-            </div>
-          </div>
-
-          <div class="field">
-            <label for="take-notes">Notes</label>
-            <textarea id="take-notes" rows="2"></textarea>
-          </div>
-
-          <div class="row">
-            <button class="btn btn--lg btn--primary" id="rec-toggle">Démarrer</button>
-            <button class="btn" id="rec-marker" disabled>Marqueur sync</button>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ── Playback ─────────────────────────────────────────────────────── -->
-    <section class="panel area-play" aria-labelledby="h-play">
-      <div class="panel__head">
-        <h2 class="panel__title" id="h-play">Playback</h2>
-        <span class="spacer"></span>
-        <span class="badge" id="play-badge">Inactif</span>
-      </div>
-      <div class="panel__body">
-        <div class="field-grid">
-          <div class="field">
-            <label for="playback-session">Session</label>
-            <select id="playback-session"></select>
-          </div>
-          <div class="field">
-            <label for="playback-take">Take</label>
-            <select id="playback-take"></select>
-          </div>
-        </div>
-
-        <div class="row">
-          <button class="btn btn--icon" id="session-refresh"
-                  aria-label="Rafraîchir la liste des sessions" title="Rafraîchir">↻</button>
-          <span class="small faint" id="take-meta"></span>
-        </div>
-
-        <div class="row">
-          <span class="field-label">Vitesse</span>
-          <button class="btn btn--ghost speed-preset" data-speed="0.5">0.5×</button>
-          <button class="btn btn--ghost speed-preset" data-speed="1">1×</button>
-          <button class="btn btn--ghost speed-preset" data-speed="2">2×</button>
-          <input id="playback-speed" type="number" value="1" min="0.1" step="0.1"
-                 style="width:72px" aria-label="Vitesse de lecture">
-          <label class="switch">
-            <input id="playback-loop" type="checkbox"> Boucle
-          </label>
-        </div>
-
-        <div class="row">
-          <button class="btn btn--primary" id="playback-start">▶ Lire</button>
-          <button class="btn" id="playback-pause" disabled aria-pressed="false">Pause</button>
-          <button class="btn btn--danger" id="playback-stop" disabled>Stop</button>
-        </div>
-
-        <!-- Read-only by design: PlaybackEngine has no seek. -->
-        <div class="progress" role="progressbar" id="playback-progress"
-             aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-          <div class="progress__bar" id="playback-bar"></div>
-        </div>
-        <div class="row small faint">
-          <span id="playback-elapsed">0.0 s</span>
-          <span class="spacer"></span>
-          <span id="playback-muted"></span>
-          <span class="spacer"></span>
-          <span id="playback-total">0.0 s</span>
-        </div>
-      </div>
-    </section>
-
-    <!-- ── Takes ────────────────────────────────────────────────────────── -->
-    <section class="panel area-takes" aria-labelledby="h-takes">
-      <div class="panel__head">
-        <h2 class="panel__title" id="h-takes">Takes de la session</h2>
-        <span class="spacer"></span>
-        <span class="badge" id="takes-count">0</span>
-      </div>
-      <div class="panel__body">
-        <div class="slots" id="takes-list"></div>
-        <div class="empty" id="takes-empty">Aucun take.</div>
-      </div>
-    </section>
+    </div>
+    <div class="spacer" style="flex:1"></div>
+    <button class="btn btn--primary" id="strip-open">Ouvrir une session</button>
+    <button class="btn btn--danger" id="session-close" hidden>Clore la session</button>
   </div>
 
-  <!-- ══ Configuration ════════════════════════════════════════════════════ -->
-  <aside class="aside" id="aside">
+  <!-- ── Session ──────────────────────────────────────────────────────────── -->
+  <section class="panel area-sess" aria-labelledby="h-session">
+    <div class="panel__head">
+      <h2 class="panel__title" id="h-session">Session</h2>
+    </div>
 
-    <!-- ── ESP32 ────────────────────────────────────────────────────────── -->
-    <section class="panel" aria-labelledby="h-esp">
-      <div class="panel__head">
-        <h2 class="panel__title" id="h-esp">ESP32 — Configuration</h2>
-        <span class="spacer"></span>
-        <span class="badge" id="esp-ack">—</span>
-      </div>
-
-      <details class="group" open>
-        <summary>Host — destination des données</summary>
-        <div class="group__body">
-          <div class="kv">
-            <div class="kv__item"><span class="kv__k">actuel</span><span class="kv__v" id="esp-host">?</span></div>
-          </div>
-          <div class="row">
-            <input id="host-ip" type="text" placeholder="auto-détecté si vide"
-                   aria-label="Adresse IP de destination" style="flex:1">
-            <button class="btn btn--primary" id="host-set">SET_HOST</button>
-          </div>
-        </div>
-      </details>
-
-      <details class="group" open>
-        <summary>Slots simples</summary>
-        <div class="group__body">
-          <div class="slots" id="simple-rows"></div>
-          <div class="empty empty--inline faint small" id="simple-empty">Non chargé.</div>
-        </div>
-      </details>
-
-      <details class="group" open>
-        <summary>Super-slots</summary>
-        <div class="group__body">
-          <div class="slots" id="super-rows"></div>
-          <div class="empty empty--inline faint small" id="super-empty">Aucun super-slot actif.</div>
-
-          <div class="field-grid">
-            <div class="field">
-              <label for="super-slot">Slot</label>
-              <input id="super-slot" type="number" value="0" min="0" max="7">
-            </div>
-            <div class="field">
-              <label for="super-deps">Deps</label>
-              <input id="super-deps" type="text" value="0,6">
-            </div>
-            <div class="field">
-              <label for="super-skip">Skip</label>
-              <input id="super-skip" type="number" value="1" min="1">
-            </div>
-          </div>
-          <button class="btn btn--primary btn--block" id="super-add">SET_SUPER</button>
-        </div>
-      </details>
-
-      <details class="group">
-        <summary>Présets <span class="faint small">— locaux au navigateur</span></summary>
-        <div class="group__body">
-          <div class="row">
-            <input id="preset-name" type="text" placeholder="nom du préset"
-                   aria-label="Nom du préset" style="flex:1">
-            <button class="btn" id="preset-save">Sauvegarder</button>
-          </div>
-          <div class="slots" id="preset-list"></div>
-          <div class="empty empty--inline faint small" id="preset-empty">Aucun préset.</div>
-        </div>
-      </details>
-    </section>
-
-    <!-- ── Paramètres du modèle ─────────────────────────────────────────── -->
-    <!-- Built entirely from GET /api/model/schema: declaring a parameter next
-         to the code that reads it is all it takes to get a control here. -->
-    <section class="panel" aria-labelledby="h-params">
-      <div class="panel__head">
-        <h2 class="panel__title" id="h-params">Modèle — Réglages</h2>
-        <span class="spacer"></span>
-        <span class="small faint" id="params-revision">—</span>
-      </div>
-
-      <details class="group" open>
-        <summary>Profils</summary>
-        <div class="group__body">
-          <div class="row">
-            <input id="params-name" type="text" placeholder="nom du profil"
-                   aria-label="Nom du profil" style="flex:1">
-            <button class="btn" id="params-save">Sauver</button>
-          </div>
-          <div class="row">
-            <select id="params-profile" aria-label="Profil à charger" style="flex:1"></select>
-            <button class="btn" id="params-load">Charger</button>
-          </div>
-          <div class="row">
-            <button class="btn" id="params-reset">Valeurs par défaut</button>
-            <button class="btn btn--danger" id="model-reset"
-                    title="Remet à zéro la position intégrée et les enveloppes">Reset modèle</button>
-          </div>
-        </div>
-      </details>
-
-      <details class="group" open>
-        <summary>Valeurs</summary>
-        <div class="group__body">
-          <div id="params-list"></div>
-          <div class="empty empty--inline faint small" id="params-empty">Non chargé.</div>
-        </div>
-      </details>
-    </section>
-
-    <!-- ── OSC → Ableton Live ───────────────────────────────────────────── -->
-    <!-- Built from GET /api/model/schema (sources) and GET /api/osc/targets
-         (destinations): declaring a signal or a detector is the whole wiring,
-         there is no route list to keep in sync by hand. -->
-    <section class="panel" aria-labelledby="h-osc">
-      <div class="panel__head">
-        <h2 class="panel__title" id="h-osc">OSC → Ableton Live</h2>
-        <span class="spacer"></span>
-        <span class="badge" id="osc-live-badge">—</span>
-      </div>
-
-      <details class="group" open>
-        <summary>Réglages</summary>
-        <div class="group__body">
-          <div class="row">
-            <label class="switch">
-              <input id="osc-enabled" type="checkbox"> Actif
-            </label>
-            <span class="spacer"></span>
-            <button class="btn btn--danger" id="osc-panic">Panique</button>
-          </div>
-          <div class="field-grid">
-            <div class="field">
-              <label for="osc-host">Hôte AbletonOSC</label>
-              <input id="osc-host" type="text" placeholder="127.0.0.1">
-            </div>
-            <div class="field">
-              <label for="osc-port">Port</label>
-              <input id="osc-port" type="number" min="1" placeholder="11000">
-            </div>
-            <div class="field">
-              <label for="osc-rate">Débit max (Hz)</label>
-              <input id="osc-rate" type="number" min="1" step="1" placeholder="30">
-            </div>
-          </div>
-          <button class="btn btn--block" id="osc-apply-settings">Appliquer</button>
-          <div class="kv">
-            <div class="kv__item"><span class="kv__k">sortie</span><span class="kv__v" id="osc-out-hz">—</span></div>
-            <div class="kv__item"><span class="kv__k">envoyés</span><span class="kv__v" id="osc-sent">—</span></div>
-          </div>
-        </div>
-      </details>
-
-      <details class="group">
-        <summary>Découverte Live</summary>
-        <div class="group__body">
-          <div class="row">
-            <button class="btn btn--icon" id="osc-discover-tracks">↻ Découvrir les pistes</button>
-          </div>
-          <p class="small faint">
-            Les devices et paramètres se découvrent au fil de la création d'une
-            route, dès qu'une piste puis un device sont choisis.
-          </p>
-        </div>
-      </details>
-
-      <details class="group">
-        <summary>Mappings <span class="faint small">— profils nommés</span></summary>
-        <div class="group__body">
-          <div class="row">
-            <input id="osc-profile-name" type="text" placeholder="nom du mapping"
-                   aria-label="Nom du mapping" style="flex:1">
-            <button class="btn" id="osc-profile-save">Sauver</button>
-          </div>
-          <div class="row">
-            <select id="osc-profile-select" aria-label="Mapping à charger" style="flex:1"></select>
-            <button class="btn" id="osc-profile-load">Charger</button>
-          </div>
-        </div>
-      </details>
-
-      <details class="group" open>
-        <summary>Nouvelle route</summary>
-        <div class="group__body">
-          <div class="field-grid">
-            <div class="field">
-              <label for="osc-add-kind">Type</label>
-              <select id="osc-add-kind">
-                <option value="signal">Signal continu</option>
-                <option value="event">Événement</option>
-              </select>
-            </div>
-            <div class="field">
-              <label for="osc-add-source">Source</label>
-              <select id="osc-add-source"></select>
-            </div>
-            <div class="field">
-              <label for="osc-add-target">Destination</label>
-              <select id="osc-add-target"></select>
-            </div>
-          </div>
-          <div class="row" id="osc-add-args"></div>
-          <div class="field">
-            <label for="osc-add-address">Adresse OSC</label>
-            <input id="osc-add-address" type="text" placeholder="/live/…">
-          </div>
-          <button class="btn btn--primary btn--block" id="osc-add-submit">Ajouter la route</button>
-        </div>
-      </details>
-
-      <details class="group" open>
-        <summary>Routes <span class="faint small" id="osc-routes-count">0</span></summary>
-        <div class="group__body">
-          <div class="slots" id="osc-routes-list"></div>
-          <div class="empty empty--inline faint small" id="osc-routes-empty">Aucune route.</div>
-        </div>
-      </details>
-    </section>
-
-    <!-- ── Session ──────────────────────────────────────────────────────── -->
-    <section class="panel" aria-labelledby="h-session">
-      <div class="panel__head">
-        <h2 class="panel__title" id="h-session">Session</h2>
-      </div>
-
-      <!-- No active session: creation form -->
-      <div class="panel__body" id="session-form">
+    <!-- No active session: creation form -->
+    <div class="panel__body" id="session-form">
+      <div class="field-grid">
         <div class="field">
           <label for="sess-title">Titre</label>
           <input id="sess-title" type="text" placeholder="ex. répétition trianon">
@@ -514,49 +235,400 @@
           <label for="sess-location">Lieu</label>
           <input id="sess-location" type="text">
         </div>
+      </div>
 
-        <div class="panel__section">Matériel</div>
-        <div class="field-grid">
-          <div class="field">
-            <label for="sess-eq-imu">IMU</label>
-            <input id="sess-eq-imu" type="text" placeholder="BNO085 #2">
-          </div>
-          <div class="field">
-            <label for="sess-eq-camera">Caméra</label>
-            <input id="sess-eq-camera" type="text">
-          </div>
-          <div class="field">
-            <label for="sess-eq-focale">Focale</label>
-            <input id="sess-eq-focale" type="text">
-          </div>
-          <div class="field">
-            <label for="sess-eq-roue">Roue</label>
-            <input id="sess-eq-roue" type="text" placeholder="modèle / diamètre">
-          </div>
+      <div class="panel__section">Matériel</div>
+      <div class="field-grid">
+        <div class="field">
+          <label for="sess-eq-imu">IMU</label>
+          <input id="sess-eq-imu" type="text" placeholder="BNO085 #2">
         </div>
-
+        <div class="field">
+          <label for="sess-eq-camera">Caméra</label>
+          <input id="sess-eq-camera" type="text">
+        </div>
+        <div class="field">
+          <label for="sess-eq-focale">Focale</label>
+          <input id="sess-eq-focale" type="text">
+        </div>
+        <div class="field">
+          <label for="sess-eq-roue">Roue</label>
+          <input id="sess-eq-roue" type="text" placeholder="modèle / diamètre">
+        </div>
         <div class="field">
           <label for="sess-fw">Firmware ESP32</label>
           <input id="sess-fw" type="text" placeholder="ex. v0.3">
         </div>
-        <div class="field">
-          <label for="sess-comments">Commentaires</label>
-          <textarea id="sess-comments" rows="2"></textarea>
-        </div>
-        <button class="btn btn--primary btn--block" id="session-open">Ouvrir la session</button>
       </div>
 
-      <!-- Active session: metadata + editable comments -->
-      <div class="panel__body" id="session-active" hidden>
-        <div class="kv" id="sess-meta"></div>
-        <div class="field">
-          <label for="sess-comments-edit">Commentaires</label>
-          <textarea id="sess-comments-edit" rows="3"></textarea>
-        </div>
-        <button class="btn btn--block" id="sess-comments-save">Sauver les commentaires</button>
+      <div class="field">
+        <label for="sess-comments">Commentaires</label>
+        <textarea id="sess-comments" rows="2"></textarea>
       </div>
-    </section>
-  </aside>
+      <button class="btn btn--primary btn--block" id="session-open">Ouvrir la session</button>
+    </div>
+
+    <!-- Active session: metadata + editable comments -->
+    <div class="panel__body" id="session-active" hidden>
+      <div class="kv" id="sess-meta"></div>
+      <div class="field">
+        <label for="sess-comments-edit">Commentaires</label>
+        <textarea id="sess-comments-edit" rows="3"></textarea>
+      </div>
+      <button class="btn btn--block" id="sess-comments-save">Sauver les commentaires</button>
+    </div>
+  </section>
+
+  <!-- ── Métadonnées du prochain take ─────────────────────────────────────── -->
+  <!-- Saisies ici avant de lancer ; le bouton REC est sur l'onglet Scène. -->
+  <section class="panel area-takemeta" aria-labelledby="h-takemeta">
+    <div class="panel__head">
+      <h2 class="panel__title" id="h-takemeta">Prochain take</h2>
+    </div>
+    <div class="panel__body">
+      <div class="field-grid">
+        <div class="field">
+          <label for="take-title">Titre</label>
+          <input id="take-title" type="text" placeholder="auto : take NNN">
+        </div>
+        <div class="field">
+          <label for="take-performer">Performeur</label>
+          <input id="take-performer" type="text">
+        </div>
+        <div class="field">
+          <label for="take-figures">Figures</label>
+          <input id="take-figures" type="text" placeholder="séparées par des virgules">
+        </div>
+      </div>
+      <div class="field">
+        <label for="take-notes">Notes</label>
+        <textarea id="take-notes" rows="2"></textarea>
+      </div>
+      <p class="small faint">L'enregistrement se déclenche depuis l'onglet Scène, ou avec <kbd>R</kbd>.</p>
+    </div>
+  </section>
+
+  <!-- ── Playback ─────────────────────────────────────────────────────────── -->
+  <section class="panel area-play" aria-labelledby="h-play">
+    <div class="panel__head">
+      <h2 class="panel__title" id="h-play">Relecture</h2>
+      <span class="spacer"></span>
+      <span class="badge" id="play-badge">Inactif</span>
+    </div>
+    <div class="panel__body">
+      <div class="field-grid">
+        <div class="field">
+          <label for="playback-session">Session</label>
+          <select id="playback-session"></select>
+        </div>
+        <div class="field">
+          <label for="playback-take">Take</label>
+          <select id="playback-take"></select>
+        </div>
+      </div>
+
+      <div class="row">
+        <button class="btn btn--icon" id="session-refresh"
+                aria-label="Rafraîchir la liste des sessions" title="Rafraîchir">↻</button>
+        <span class="small faint" id="take-meta"></span>
+      </div>
+
+      <div class="row">
+        <span class="field-label">Vitesse</span>
+        <button class="btn btn--ghost speed-preset" data-speed="0.5">0.5×</button>
+        <button class="btn btn--ghost speed-preset" data-speed="1">1×</button>
+        <button class="btn btn--ghost speed-preset" data-speed="2">2×</button>
+        <input id="playback-speed" type="number" value="1" min="0.1" step="0.1"
+               style="width:72px" aria-label="Vitesse de lecture">
+        <label class="switch">
+          <input id="playback-loop" type="checkbox"> Boucle
+        </label>
+      </div>
+
+      <div class="row">
+        <button class="btn btn--primary" id="playback-start">▶ Lire</button>
+        <button class="btn" id="playback-pause" disabled aria-pressed="false">Pause</button>
+        <button class="btn btn--danger" id="playback-stop" disabled>Stop</button>
+      </div>
+
+      <!-- Read-only by design: PlaybackEngine has no seek. -->
+      <div class="progress" role="progressbar" id="playback-progress"
+           aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div class="progress__bar" id="playback-bar"></div>
+      </div>
+      <div class="row small faint">
+        <span id="playback-elapsed">0.0 s</span>
+        <span class="spacer"></span>
+        <span id="playback-muted"></span>
+        <span class="spacer"></span>
+        <span id="playback-total">0.0 s</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Takes ────────────────────────────────────────────────────────────── -->
+  <section class="panel area-takes" aria-labelledby="h-takes">
+    <div class="panel__head">
+      <h2 class="panel__title" id="h-takes">Takes de la session</h2>
+      <span class="spacer"></span>
+      <span class="badge" id="takes-count">0</span>
+    </div>
+    <div class="panel__body">
+      <div class="slots" id="takes-list"></div>
+      <div class="empty" id="takes-empty">Aucun take.</div>
+    </div>
+  </section>
+</div>
+
+<!-- ══ Signaux — la boucle de réglage ══════════════════════════════════════ -->
+<div class="workspace signaux" id="tab-signaux" role="tabpanel"
+     aria-labelledby="tabbtn-signaux" hidden>
+
+  <!-- ── Scope ────────────────────────────────────────────────────────────── -->
+  <!-- Traces at the model's own rate (GET /api/model/history), not from the
+       4 Hz snapshot: at 4 Hz you see one sample in twenty-five, which is
+       useless for deciding where a detection should fire. -->
+  <section class="panel area-scope" aria-labelledby="h-scope">
+    <div class="panel__head">
+      <h2 class="panel__title" id="h-scope">Signaux</h2>
+      <span class="spacer"></span>
+      <label class="switch small">
+        <input id="scope-auto" type="checkbox"> échelle auto
+      </label>
+      <select id="scope-window" aria-label="Fenêtre de temps">
+        <option value="5">5 s</option>
+        <option value="10" selected>10 s</option>
+        <option value="30">30 s</option>
+        <option value="60">60 s</option>
+      </select>
+      <button class="btn btn--icon" id="scope-toggle"
+              aria-expanded="false" aria-controls="scope-picker-box">Choisir…</button>
+    </div>
+    <div class="panel__body">
+      <div class="scope">
+        <canvas id="scope-canvas" role="img"
+                aria-label="Tracé des signaux sélectionnés"></canvas>
+      </div>
+      <div class="legend" id="scope-legend"></div>
+      <div class="empty" id="scope-empty">Aucun signal sélectionné.</div>
+
+      <div id="scope-picker-box" hidden>
+        <div class="row">
+          <span class="small faint">Un signal indisponible indique ce qu'il faut activer.</span>
+          <span class="spacer"></span>
+          <button class="btn btn--icon" id="scope-clear">Tout décocher</button>
+        </div>
+        <div id="scope-picker"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Paramètres du modèle ─────────────────────────────────────────────── -->
+  <!-- Built entirely from GET /api/model/schema: declaring a parameter next
+       to the code that reads it is all it takes to get a control here. -->
+  <section class="panel area-params" aria-labelledby="h-params">
+    <div class="panel__head">
+      <h2 class="panel__title" id="h-params">Modèle — Réglages</h2>
+      <span class="spacer"></span>
+      <span class="small faint" id="params-revision">—</span>
+    </div>
+
+    <details class="group" open>
+      <summary>Profils</summary>
+      <div class="group__body">
+        <div class="row">
+          <input id="params-name" type="text" placeholder="nom du profil"
+                 aria-label="Nom du profil" style="flex:1">
+          <button class="btn" id="params-save">Sauver</button>
+        </div>
+        <div class="row">
+          <select id="params-profile" aria-label="Profil à charger" style="flex:1"></select>
+          <button class="btn" id="params-load">Charger</button>
+        </div>
+        <div class="row">
+          <button class="btn" id="params-reset">Valeurs par défaut</button>
+          <button class="btn btn--danger" id="model-reset"
+                  title="Remet à zéro la position intégrée et les enveloppes">Reset modèle</button>
+        </div>
+      </div>
+    </details>
+
+    <details class="group" open>
+      <summary>Valeurs</summary>
+      <div class="group__body">
+        <div id="params-list"></div>
+        <div class="empty empty--inline faint small" id="params-empty">Non chargé.</div>
+      </div>
+    </details>
+  </section>
+</div>
+
+<!-- ══ Sortie — pont OSC ═══════════════════════════════════════════════════ -->
+<div class="workspace sortie" id="tab-sortie" role="tabpanel"
+     aria-labelledby="tabbtn-sortie" hidden>
+
+  <!-- Built from GET /api/model/schema (sources) and GET /api/osc/targets
+       (destinations): declaring a signal or a detector is the whole wiring,
+       there is no route list to keep in sync by hand. -->
+  <section class="panel" aria-labelledby="h-osc">
+    <div class="panel__head">
+      <h2 class="panel__title" id="h-osc">OSC → Ableton Live</h2>
+      <span class="spacer"></span>
+      <span class="small faint">débit et panique sur l'onglet Scène</span>
+    </div>
+
+    <details class="group" open>
+      <summary>Réglages</summary>
+      <div class="group__body">
+        <label class="switch">
+          <input id="osc-enabled" type="checkbox"> Actif
+        </label>
+        <div class="field-grid">
+          <div class="field">
+            <label for="osc-host">Hôte AbletonOSC</label>
+            <input id="osc-host" type="text" placeholder="127.0.0.1">
+          </div>
+          <div class="field">
+            <label for="osc-port">Port</label>
+            <input id="osc-port" type="number" min="1" placeholder="11000">
+          </div>
+          <div class="field">
+            <label for="osc-rate">Débit max (Hz)</label>
+            <input id="osc-rate" type="number" min="1" step="1" placeholder="30">
+          </div>
+        </div>
+        <button class="btn btn--block" id="osc-apply-settings">Appliquer</button>
+      </div>
+    </details>
+
+    <details class="group">
+      <summary>Découverte Live</summary>
+      <div class="group__body">
+        <div class="row">
+          <button class="btn btn--icon" id="osc-discover-tracks">↻ Découvrir les pistes</button>
+        </div>
+        <p class="small faint">
+          Les devices et paramètres se découvrent au fil de la création d'une
+          route, dès qu'une piste puis un device sont choisis.
+        </p>
+      </div>
+    </details>
+
+    <details class="group">
+      <summary>Mappings <span class="faint small">— profils nommés</span></summary>
+      <div class="group__body">
+        <div class="row">
+          <input id="osc-profile-name" type="text" placeholder="nom du mapping"
+                 aria-label="Nom du mapping" style="flex:1">
+          <button class="btn" id="osc-profile-save">Sauver</button>
+        </div>
+        <div class="row">
+          <select id="osc-profile-select" aria-label="Mapping à charger" style="flex:1"></select>
+          <button class="btn" id="osc-profile-load">Charger</button>
+        </div>
+      </div>
+    </details>
+
+    <details class="group" open>
+      <summary>Nouvelle route</summary>
+      <div class="group__body">
+        <div class="field-grid">
+          <div class="field">
+            <label for="osc-add-kind">Type</label>
+            <select id="osc-add-kind">
+              <option value="signal">Signal continu</option>
+              <option value="event">Événement</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="osc-add-source">Source</label>
+            <select id="osc-add-source"></select>
+          </div>
+          <div class="field">
+            <label for="osc-add-target">Destination</label>
+            <select id="osc-add-target"></select>
+          </div>
+        </div>
+        <div class="row" id="osc-add-args"></div>
+        <div class="field">
+          <label for="osc-add-address">Adresse OSC</label>
+          <input id="osc-add-address" type="text" placeholder="/live/…">
+        </div>
+        <button class="btn btn--primary btn--block" id="osc-add-submit">Ajouter la route</button>
+      </div>
+    </details>
+
+    <details class="group" open>
+      <summary>Routes <span class="faint small" id="osc-routes-count">0</span></summary>
+      <div class="group__body">
+        <div class="slots" id="osc-routes-list"></div>
+        <div class="empty empty--inline faint small" id="osc-routes-empty">Aucune route.</div>
+      </div>
+    </details>
+  </section>
+</div>
+
+<!-- ══ Config — ESP32 ══════════════════════════════════════════════════════ -->
+<div class="workspace config" id="tab-config" role="tabpanel"
+     aria-labelledby="tabbtn-config" hidden>
+
+  <section class="panel" aria-labelledby="h-esp">
+    <div class="panel__head">
+      <h2 class="panel__title" id="h-esp">ESP32 — Configuration</h2>
+      <span class="spacer"></span>
+      <span class="badge" id="esp-ack">—</span>
+    </div>
+
+    <details class="group" open>
+      <summary>Slots simples</summary>
+      <div class="group__body">
+        <div class="slots" id="simple-rows"></div>
+        <div class="empty empty--inline faint small" id="simple-empty">Non chargé.</div>
+      </div>
+    </details>
+
+    <details class="group" open>
+      <summary>Super-slots</summary>
+      <div class="group__body">
+        <div class="slots" id="super-rows"></div>
+        <div class="empty empty--inline faint small" id="super-empty">Aucun super-slot actif.</div>
+
+        <div class="field-grid">
+          <div class="field">
+            <label for="super-slot">Slot</label>
+            <input id="super-slot" type="number" value="0" min="0" max="7">
+          </div>
+          <div class="field">
+            <label for="super-deps">Deps</label>
+            <input id="super-deps" type="text" value="0,6">
+          </div>
+          <div class="field">
+            <label for="super-skip">Skip</label>
+            <input id="super-skip" type="number" value="1" min="1">
+          </div>
+        </div>
+        <button class="btn btn--primary btn--block" id="super-add">SET_SUPER</button>
+      </div>
+    </details>
+
+    <details class="group">
+      <summary>Host <span class="faint small">— destination des données</span></summary>
+      <div class="group__body">
+        <p class="small faint">
+          Réglé automatiquement au démarrage, et réparé tout seul depuis l'adresse
+          source des paquets reçus. À ne toucher qu'en dépannage.
+        </p>
+        <div class="kv">
+          <div class="kv__item"><span class="kv__k">actuel</span><span class="kv__v" id="esp-host">?</span></div>
+        </div>
+        <div class="row">
+          <input id="host-ip" type="text" placeholder="auto-détecté si vide"
+                 aria-label="Adresse IP de destination" style="flex:1">
+          <button class="btn" id="host-set">SET_HOST</button>
+        </div>
+      </div>
+    </details>
+  </section>
 </div>
 
 <!-- ══ Toasts ═════════════════════════════════════════════════════════════ -->
@@ -571,12 +643,12 @@
   </div>
   <div class="panel__body">
     <div class="shortcut-list">
+      <div><kbd>1</kbd>…<kbd>5</kbd> <span>Changer d'onglet</span></div>
       <div><kbd>R</kbd> <span>Démarrer / arrêter l'enregistrement</span></div>
       <div><kbd>M</kbd> <span>Poser un marqueur de synchro</span></div>
       <div><kbd>Espace</kbd> <span>Playback : lire / pause</span></div>
       <div><kbd>S</kbd> <span>Playback : stop</span></div>
       <div><kbd>L</kbd> <span>Playback : boucle</span></div>
-      <div><kbd>C</kbd> <span>Replier / déplier la configuration</span></div>
       <div><kbd>?</kbd> <span>Afficher cette aide</span></div>
       <div><kbd>Échap</kbd> <span>Fermer / annuler une édition</span></div>
     </div>

@@ -3,7 +3,7 @@
 // Pause/resume state is always read back from the snapshot, never optimistic.
 
 import {
-  $, setText, setClass, setAttr, setDisabled, syncControl, trackDirty,
+  $, setText, setClass, setAttr, setDisabled, setHidden, syncControl, trackDirty,
   takeDuration, fmtCount,
 } from "../dom.js";
 import { on, state } from "../store.js";
@@ -105,6 +105,37 @@ function render(p) {
   setAttr(pause, "aria-pressed", p.paused ? "true" : "false");
 
   syncControl($("playback-loop"), p.loop);
+
+  renderSceneTransport(p, pct);
+}
+
+/**
+ * The Scène tab's transport. Shown only while a replay is running: the engine
+ * has no "loaded but not started" state — `start` takes a session and a take
+ * and begins — so there is nothing to control before then, and picking a take
+ * stays in Captation rather than being duplicated here.
+ */
+function renderSceneTransport(p, pct) {
+  setHidden($("scene-transport"), !p.active);
+  if (!p.active) return;
+
+  setText($("scene-play-take"), `${p.session} / ${p.take}  ×${p.speed}${p.loop ? "  ⟳" : ""}`);
+
+  const badge = $("scene-play-badge");
+  setText(badge, p.paused ? "En pause" : "▶ Lecture");
+  setClass(badge, "badge " + (p.paused ? "badge--warn" : "badge--info"));
+
+  const bar = $("scene-play-bar");
+  if (bar.style.width !== pct + "%") bar.style.width = pct + "%";
+  setClass(bar, "progress__bar" + (p.paused ? " paused" : ""));
+  setAttr($("scene-play-progress"), "aria-valuenow", Math.round(pct));
+
+  setText($("scene-play-elapsed"), `${p.elapsed_s} s`);
+  setText($("scene-play-total"), `${p.total_s} s`);
+
+  const pause = $("scene-play-pause");
+  setText(pause, p.paused ? "Reprendre" : "Pause");
+  setAttr(pause, "aria-pressed", p.paused ? "true" : "false");
 }
 
 export function initPlayback() {
@@ -140,11 +171,16 @@ export function initPlayback() {
     loop: $("playback-loop").checked,
   }), "Lecture démarrée");
 
-  $("playback-pause").onclick = action(() =>
+  const pause = action(() =>
     api("POST", isPaused() ? "/api/playback/resume" : "/api/playback/pause"));
+  const stop = action(() => api("POST", "/api/playback/stop"), "Lecture arrêtée");
 
-  $("playback-stop").onclick = action(
-    () => api("POST", "/api/playback/stop"), "Lecture arrêtée");
+  $("playback-pause").onclick = pause;
+  $("playback-stop").onclick = stop;
+
+  // Same two commands from the Scène transport.
+  $("scene-play-pause").onclick = pause;
+  $("scene-play-stop").onclick = stop;
 }
 
 /** Used by the keyboard shortcuts. */

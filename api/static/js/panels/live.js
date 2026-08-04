@@ -1,46 +1,15 @@
-// ── Live data: wheel position + per-sensor value cards ──────────────────────
-// Two sources, deliberately: the sensor cards come from transport/live_monitor.py
-// (what is arriving on the wire), the position from the model's latest frame
-// (what we make of it). Keeping them apart is why a computed value can no longer
-// masquerade as an incoming stream.
+// ── Wheel position ──────────────────────────────────────────────────────────
+// What is left of the old "Données live" panel. The per-sensor cards it used to
+// carry duplicated the health streams table — same rate, same sparkline, same
+// client-side ring buffer — and their raw field chips (gyro_x = 0.737 at 4 Hz)
+// were debug output: unreadable while the wheel moves, and nothing in the
+// artistic workflow acts on a raw gyro component, which is what model/ is for.
+//
+// The position is the model's own output (`model.pose`), not a wire value, so
+// it is the one thing here the streams table cannot tell you.
 
-import {
-  $, h, setText, setClass, setHidden, keyed,
-  makeSpark, updateSpark, fmt, fmtNum,
-} from "../dom.js";
-import { on, historyOf } from "../store.js";
-
-// Telemetry, shown in the health panel — not a sensor stream.
-const NOT_A_SENSOR = new Set(["heartbeat"]);
-
-function createSensor() {
-  const spark = makeSpark(64, 18);
-  return h("div.sensor", null,
-    h("div.sensor__head", null,
-      h("span.sensor__name"),
-      h("span.spacer"),
-      h("span.sensor__rate"),
-      spark,
-    ),
-    h("div.kv"),
-  );
-}
-
-function kvItem() {
-  return h("div.kv__item", null, h("span.kv__k"), h("span.kv__v"));
-}
-
-function updateSensor(node, s) {
-  const [head, kv] = node.children;
-  setText(head.children[0], s.type);
-  setText(head.children[2], s.rate != null ? s.rate.toFixed(0) + " Hz" : "—");
-  updateSpark(head.children[3], historyOf(s.type), 0, s.rate > 0 ? "ok" : "bad");
-
-  keyed(kv, s.fields, (f) => f[0], kvItem, (item, [k, v]) => {
-    setText(item.children[0], k);
-    setText(item.children[1], fmt(v));
-  });
-}
+import { $, setText, setClass, fmtNum } from "../dom.js";
+import { on } from "../store.js";
 
 function renderPose(pose) {
   for (const axis of ["x", "y", "z"]) {
@@ -56,25 +25,5 @@ export function initLive() {
   on("model", (model) => {
     if (!model) return;
     renderPose(model.pose);
-  });
-
-  on("live", (live) => {
-    if (!live) return;
-
-    const badge = $("live-badge");
-    setText(badge, live.connected ? "flux actif" : "aucun flux");
-    setClass(badge, "badge badge--" + (live.connected ? "ok" : "bad"));
-
-    const sensors = Object.entries(live.latest || {})
-      .filter(([type]) => !NOT_A_SENSOR.has(type))
-      .map(([type, vals]) => ({
-        type,
-        rate: (live.rates || {})[type],
-        fields: Object.entries(vals || {}),
-      }))
-      .sort((a, b) => a.type.localeCompare(b.type));
-
-    keyed($("sensors"), sensors, (s) => s.type, createSensor, updateSensor);
-    setHidden($("sensors-empty"), sensors.length > 0);
   });
 }

@@ -11,6 +11,7 @@
 import { $, h, setText, setHidden, setClass, keyed } from "../dom.js";
 import { on, state } from "../store.js";
 import { api } from "../api.js";
+import { onTabChange } from "../tabs.js";
 
 const STORE_KEY = "conductor_scope_signals";
 const POLL_MS = 120;
@@ -28,6 +29,19 @@ let windowS = 10;
 let autoScale = false;
 let latest = null;         // last history payload
 let timer = null;
+
+// Every canvas showing the same trace. The full scope on the Signaux tab and
+// the read-only strip on Scène share one selection, one palette and one poll —
+// the strip is another view of this module's state, not a second scope.
+const canvases = [];
+
+function registerCanvas(id, opts = {}) {
+  const el = $(id);
+  if (el) canvases.push({ el, ...opts });
+}
+
+/** A canvas in a hidden tab measures 0 — drawing into it would be meaningless. */
+const isVisible = (c) => c.el.clientWidth > 0 && c.el.clientHeight > 0;
 
 const specOf = (name) =>
   (schema?.signals || []).find((s) => s.name === name);
@@ -131,8 +145,6 @@ function legendRow() {
 }
 
 function renderLegend() {
-  const host = $("scope-legend");
-  if (!host) return;
   const live = state.model?.signals || {};
 
   const items = selected.map((name) => {
@@ -147,20 +159,44 @@ function renderLegend() {
     };
   });
 
-  keyed(host, items, (i) => i.name, legendRow, (node, i) => {
-    node.children[0].style.background = i.colour;
-    setText(node.children[1], i.name);
-    setText(node.children[2], i.value);
-  });
-  setHidden($("scope-empty"), items.length > 0);
+  // Both tabs carry a legend; each keeps its own nodes, reconciled by name.
+  for (const [hostId, emptyId] of [
+    ["scope-legend", "scope-empty"],
+    ["scope-strip-legend", "scope-strip-empty"],
+  ]) {
+    const host = $(hostId);
+    if (!host) continue;
+    keyed(host, items, (i) => i.name, legendRow, (node, i) => {
+      node.children[0].style.background = i.colour;
+      setText(node.children[1], i.name);
+      setText(node.children[2], i.value);
+    });
+    setHidden($(emptyId), items.length > 0);
+  }
 }
 
 // ── Polling and drawing ─────────────────────────────────────────────────────
 
 async function poll() {
-  if (!selected.length) { latest = null; draw(); return; }
-  const canvas = $("scope-canvas");
-  const points = Math.max(120, Math.min(2000, Math.round(canvas.clientWidth)));
+  const visible = canvases.filter(isVisible);
+  if (!visible.length) return;          // nobody is looking; see initScope()
+
+  if (!selected.length) { latest = null; drawAll(); return; }
+
+  // One request feeds every canvas, so ask for the widest one's resolution —
+  // but never for more columns than the window actually holds samples. Asking
+  // for 1500 columns of a 1000-sample window returns empty ones as null, which
+  // the gap-aware drawing then renders as a dashed line: a real hole in the
+  // signal and an artefact of over-sampling would look identical.
+  // Aim for at least two samples per column: the envelope is min/max, so
+  // aggregating more samples per column loses nothing — a one-sample spike
+  // still reaches the column's max — whereas asking for more columns than
+  // there are samples returns empty ones as null, and the gap-aware drawing
+  // renders those as dashes. A real hole in the signal must not look the same
+  // as an artefact of over-sampling.
+  const width = Math.max(...visible.map((c) => c.el.clientWidth));
+  const cap = latest?.samples > 0 ? latest.samples / 2 : width;
+  const points = Math.max(120, Math.min(2000, Math.round(Math.min(width, cap))));
   try {
     latest = await api("GET",
       `/api/model/history?signals=${selected.join(",")}` +
@@ -168,7 +204,13 @@ async function poll() {
   } catch {
     return;
   }
-  draw();
+  drawAll();
+}
+
+function drawAll() {
+  for (const c of canvases) {
+    if (isVisible(c)) drawInto(c.el, c);
+  }
 }
 
 /** Vertical mapping for one signal: declared range, or the visible extremes. */
@@ -186,15 +228,14 @@ function scaleFor(name, series) {
   return { lo: lo - pad, hi: hi + pad };
 }
 
-function draw() {
-  const canvas = $("scope-canvas");
-  if (!canvas) return;
+function drawInto(canvas, { compact = false } = {}) {
+  const w = canvas.clientWidth, hgt = canvas.clientHeight;
+  if (!w || !hgt) return;             // hidden tab — nothing meaningful to draw
 
   // Cap the pixel ratio: past 2 the extra fragments buy nothing on a trace made
   // of thin lines, and this redraws several times a second.
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const w = canvas.clientWidth, hgt = canvas.clientHeight;
-  if (canvas.width !== Math.round(w * dpr)) {
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(hgt * dpr)) {
     canvas.width = Math.round(w * dpr);
     canvas.height = Math.round(hgt * dpr);
   }
@@ -203,11 +244,12 @@ function draw() {
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   g.clearRect(0, 0, w, hgt);
 
-  // Grid
+  // Grid — fewer lines on the short strip, where four would be mostly grid.
+  const divisions = compact ? 2 : 4;
   g.strokeStyle = "#2c323b";
   g.lineWidth = 1;
-  for (let i = 1; i < 4; i++) {
-    const y = Math.round((hgt * i) / 4) + 0.5;
+  for (let i = 1; i < divisions; i++) {
+    const y = Math.round((hgt * i) / divisions) + 0.5;
     g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke();
   }
 
@@ -218,6 +260,8 @@ function draw() {
     if (!series) continue;
     drawSeries(g, w, hgt, name, series);
   }
+
+  if (compact) return;
 
   // Time axis label, bottom-right
   g.fillStyle = "#727d8a";
@@ -267,13 +311,16 @@ function drawSeries(g, w, hgt, name, series) {
 export function initScope() {
   selected = loadSelection();
 
+  registerCanvas("scope-canvas");
+  registerCanvas("scope-strip", { compact: true });
+
   $("scope-window").onchange = (e) => {
     windowS = parseFloat(e.target.value);
     poll();
   };
   $("scope-auto").onchange = (e) => {
     autoScale = e.target.checked;
-    draw();
+    drawAll();
   };
   $("scope-toggle").onclick = () => {
     const box = $("scope-picker-box");
@@ -304,10 +351,24 @@ export function initScope() {
     }
   });
 
-  new ResizeObserver(() => draw()).observe($("scope-canvas"));
+  // Fires on tab switches too: `hidden` takes a canvas to 0×0 and back, which
+  // is exactly when it needs re-measuring and repainting.
+  const ro = new ResizeObserver(() => drawAll());
+  for (const c of canvases) ro.observe(c.el);
+
+  // Polling follows visibility. This used to run at 8 Hz for the life of the
+  // page whether or not anyone was looking at a trace.
+  onTabChange(() => {
+    const wanted = canvases.some(isVisible);
+    if (wanted && !timer) {
+      timer = setInterval(poll, POLL_MS);
+      poll();
+    } else if (!wanted && timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+  });
 
   refreshSchema();
   renderLegend();
-  timer = setInterval(poll, POLL_MS);
-  poll();
 }
