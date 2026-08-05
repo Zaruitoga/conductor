@@ -8,6 +8,9 @@
 
 import * as THREE from './vendor/three.module.js';
 import { OrbitControls } from './vendor/OrbitControls.js';
+// PROTOTYPE #8 (branche proto/8-video-dans-le-viz) — à retirer avec
+// api/viz/prototype-video-sync/ et le bloc prototype de api/app.py.
+import { createVideoSyncPrototype } from './prototype-video-sync/mount.js';
 
 const $ = (id) => document.getElementById(id);
 const RECONNECT_MS = 1000;
@@ -58,7 +61,10 @@ camera.lookAt(0, 0, 0);
 // it fill-rate bound. Past ~1.5 the extra pixels buy nothing visible here, and a
 // saturated main thread also stops draining the packet socket in time.
 const dpr = window.devicePixelRatio || 1;
-const renderer = new THREE.WebGLRenderer({ antialias: dpr < 2 });
+// `alpha: true` : PROTOTYPE #8 — la variante « superposition » dessine la roue
+// par-dessus la vidéo, ce qui demande un fond transparent au moment de la
+// construction du contexte. Sans le prototype, ce drapeau redevient inutile.
+const renderer = new THREE.WebGLRenderer({ antialias: dpr < 2, alpha: true });
 renderer.setPixelRatio(Math.min(dpr, 1.5));
 renderer.setSize(container.clientWidth, container.clientHeight);
 container.appendChild(renderer.domElement);
@@ -114,6 +120,15 @@ scene.add(grid);
 // The pipeline works in a Z-up frame, Three.js is Y-up.
 const qFix = new THREE.Quaternion()
   .setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
+
+// ── PROTOTYPE #8 — vidéo synchronisée ───────────────────────────────────────
+// Quatre crochets, appelés plus bas là où l'information passe déjà. `?variant=off`
+// rend des fonctions vides et le viz se comporte exactement comme sans lui.
+const proto = createVideoSyncPrototype({
+  three:  { renderer, scene, controls, ground, grid },
+  follow: $("follow"),
+});
+// ── fin du bloc prototype ───────────────────────────────────────────────────
 
 // ── Latest sample (only the newest one is ever drawn) ───────────────────────
 const sampleQ = new THREE.Quaternion();
@@ -182,7 +197,10 @@ const wsProto = location.protocol === "https:" ? "wss" : "ws";
 // ?types=frame — the wheel only needs the model's frames, and the server would
 // otherwise also send gyro/game_rv/super_0/heartbeat: several times the messages
 // to parse for nothing.
-connect(`${wsProto}://${location.hostname}:${cfg.ws_port}/?types=frame`, {
+// PROTOTYPE #8: `meta` is added because a replay's reset is the one instant the
+// video has to jump with the timeline instead of waiting for drift (acquis n°7).
+// It is rare by construction, so it costs nothing to carry.
+connect(`${wsProto}://${location.hostname}:${cfg.ws_port}/?types=frame,meta`, {
   onOpen: () => setDot("stream-dot", "ok", "stream-text",
                        `flux 3D — port ${cfg.ws_port}`),
   onClose: () => {
@@ -193,8 +211,10 @@ connect(`${wsProto}://${location.hostname}:${cfg.ws_port}/?types=frame`, {
   onMessage: (ev) => {
     let d;
     try { d = JSON.parse(ev.data); } catch { return; }
+    if (d.type === "meta") { proto.onMeta(d); return; }   // PROTOTYPE #8
     if (d.type !== "frame") return;
     packetCount++;
+    proto.onFrame(d);                                     // PROTOTYPE #8
 
     // `pose` is the geometric state, always present in a frame — as opposed to
     // `signals`, whose contents depend on how the ESP is configured. Position
@@ -264,6 +284,7 @@ function renderPlayback(p) {
   $("pb-pause").disabled = !p.active;
   $("pb-stop").disabled = !p.active;
   playbackPaused = !!p.paused;
+  proto.onPlayback(p);   // PROTOTYPE #8
 }
 
 let playbackPaused = false;
@@ -278,6 +299,7 @@ setInterval(() => {
   const fps = Math.round(frameCount / elapsed);
   packetCount = 0;
   frameCount = 0;
+  proto.onRates({ fps, pps: rateHz });   // PROTOTYPE #8 — mêmes compteurs, pas d'autres
   $("hud-rate").textContent = `${rateHz} Hz (frames) · ${fps} fps`;
   if (hasSample) {
     $("hud-pos").textContent =

@@ -2,9 +2,9 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "conductor-sim",
-      "runtimeExecutable": "bash",
-      "runtimeArgs": ["-c", "SIM=1 python3 main.py"],
+      "name": "conductor",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["main.py"],
       "port": 8000
     }
   ]

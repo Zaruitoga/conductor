@@ -1,0 +1,146 @@
+/* proto.css — PROTOTYPE #8. Chargé par mount.js, retiré avec lui.
+   Tout est préfixé `proto-` pour qu'un grep dise en une seconde ce qui part. */
+
+/* Le HUD est déplacé dans le conteneur du canvas (et non plus dans #stage) :
+   c'est ce qui le garde sur la 3D quand la vidéo prend la moitié de l'écran. */
+#canvas-container { position: relative; }
+
+/* Défaut cosmétique préexistant, corrigé ici parce qu'il fausse justement la
+   question posée (« le HUD reste-t-il lisible ? ») : `#hud { white-space: pre }`
+   rend visibles les sauts de ligne d'indentation entre les trois <div> de
+   index.html, et le bloc fait trois fois sa hauteur utile. Le `pre` reste sur
+   chaque ligne, qui en a besoin pour ses espaces d'alignement. */
+#hud { white-space: normal; }
+#hud > div { white-space: pre; }
+
+/* ── Le cadre vidéo, commun aux trois variantes ────────────────────────────── */
+.proto-video-wrap {
+  background: #000;
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+  min-height: 110px;
+  overflow: hidden;
+}
+.proto-video-wrap video {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  object-fit: contain;
+  background: #000;
+  display: block;
+}
+.proto-video-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 8px;
+  font: 11px/1.4 ui-monospace, monospace;
+  color: var(--muted);
+  background: rgba(26, 29, 33, .92);
+  border-bottom: 1px solid var(--border);
+  cursor: grab;
+  user-select: none;
+  flex: none;
+}
+.proto-video-bar .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proto-video-bar button {
+  background: none; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 3px; padding: 1px 6px; font: inherit; cursor: pointer;
+}
+.proto-video-bar button:hover { color: var(--text); border-color: var(--accent); }
+.proto-hidden { display: none !important; }
+
+/* Un take sans vidéo : le cadre reste, vide, et le bandeau le dit. La carte #2
+   range « comment le viz se comporte pour un take sans vidéo » dans le brouillard
+   — voici au moins une dégradation qu'on peut regarder et refuser. */
+.proto-no-video video { display: none; }
+.proto-no-video { background: repeating-linear-gradient(
+  45deg, #16181c, #16181c 10px, #1c1f24 10px, #1c1f24 20px); }
+
+/* ── A — incrustation permutable ───────────────────────────────────────────── */
+#stage.proto-a #canvas-container,
+#stage.proto-a .proto-video-wrap { position: absolute; }
+#stage.proto-a .proto-full  { inset: 0; z-index: 0; border: none; }
+#stage.proto-a .proto-inset {
+  z-index: 2;
+  border-radius: 6px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, .55);
+  resize: both;          /* le coin bas-droit redimensionne, gratuitement */
+  overflow: hidden;
+}
+#stage.proto-a .proto-inset#canvas-container { border: 1px solid var(--border); }
+
+/* ── B — côte à côte ───────────────────────────────────────────────────────── */
+#stage.proto-b { display: flex; }
+#stage.proto-b #canvas-container { flex: none; height: 100%; }
+#stage.proto-b .proto-video-wrap { flex: 1; min-width: 0; height: 100%; border-top: none; border-bottom: none; border-right: none; }
+.proto-divider {
+  flex: none;
+  width: 6px;
+  background: var(--border);
+  cursor: col-resize;
+}
+.proto-divider:hover { background: var(--accent); }
+
+/* ── C — superposition ─────────────────────────────────────────────────────── */
+#stage.proto-c #canvas-container,
+#stage.proto-c .proto-video-wrap { position: absolute; inset: 0; }
+#stage.proto-c .proto-video-wrap { z-index: 0; border: none; }
+#stage.proto-c #canvas-container { z-index: 1; }
+/* En superposition, le bas de l'écran appartient aux contrôles natifs de la
+   vidéo : le HUD y devient illisible, superposé au chronomètre. Il monte. */
+#stage.proto-c #hud { bottom: auto; top: 12px; }
+
+#stage.proto-c .proto-opacity {
+  position: absolute; z-index: 3; top: 10px; right: 12px;
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 10px; border-radius: 6px;
+  background: rgba(26, 29, 33, .88); border: 1px solid var(--border);
+  font: 11px ui-monospace, monospace; color: var(--muted);
+}
+
+/* ── La barre de bascule des variantes ─────────────────────────────────────── */
+#proto-switcher {
+  position: fixed;
+  bottom: 14px; left: 50%; transform: translateX(-50%);
+  z-index: 50;
+  display: flex; align-items: center; gap: 4px;
+  padding: 4px 6px;
+  border-radius: 999px;
+  background: #f2c94c;
+  color: #1a1d21;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .5);
+  font: 12px/1 system-ui, sans-serif;
+}
+#proto-switcher button {
+  background: rgba(0, 0, 0, .12); color: #1a1d21;
+  border: none; border-radius: 999px;
+  width: 24px; height: 22px; padding: 0; cursor: pointer; font-size: 13px;
+}
+#proto-switcher button:hover { background: rgba(0, 0, 0, .25); }
+#proto-switcher .label { padding: 0 8px; font-weight: 600; white-space: nowrap; }
+#proto-switcher .tag {
+  padding: 2px 7px; border-radius: 999px;
+  background: rgba(0, 0, 0, .18); font-weight: 700; letter-spacing: .04em;
+}
+
+/* ── Le bloc d'instrument, dans l'aside ────────────────────────────────────── */
+#proto-panel h2 { color: #f2c94c; }
+#proto-panel .kv {
+  display: flex; justify-content: space-between; gap: 8px;
+  font: 11px/1.7 ui-monospace, monospace;
+}
+#proto-panel .kv span:last-child { color: var(--text); }
+#proto-chart {
+  width: 100%; height: 74px; display: block;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+  margin: 6px 0;
+}
+#proto-panel .row { display: flex; gap: 6px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
+#proto-panel input[type="number"] { width: 84px; }
+#proto-panel .mini { padding: 3px 7px; font-size: 11px; }
+#proto-panel .warn { color: var(--warn); }
+#proto-panel .bad  { color: var(--bad); }
+#proto-panel .ok   { color: var(--ok); }
