@@ -15,11 +15,12 @@ export class Stepper {
     this.dt = 1 / 30;                 // remplacé par la cadence mesurée
     this.spread = null;               // [min, max] des intervalles observés
     this.media = 0;
-    this.tries = 0;
     this.supported = "requestVideoFrameCallback" in HTMLVideoElement.prototype;
     this._fns = [];
     this._busy = false;
     this._pending = 0;
+    this._seekTo = null;
+    this._seeking = false;
   }
 
   on(fn) { this._fns.push(fn); return this; }
@@ -64,34 +65,68 @@ export class Stepper {
       this.spread = [s[0], s[s.length - 1]];
     }   // sans rVFC les écarts ne mesurent que notre propre pas de sonde : on garde 1/30
     this.media = await this._go(0);
-    this.tries = 1;
     this._emit();
   }
 
-  async seek(t) { this.media = await this._go(t); this.tries = 1; this._emit(); }
+  // Un seek pendant qu'un autre est en vol laissait la dernière promesse résolue
+  // écraser la position — d'où un curseur qui saute à un point cliqué plus tôt.
+  // Une seule demande en attente, la plus récente gagne.
+  async seek(t) {
+    this._seekTo = t;
+    if (this._seeking) return;
+    this._seeking = true;
+    while (this._seekTo != null) {
+      const target = this._seekTo; this._seekTo = null;
+      this.media = await this._go(target);
+      this._emit();
+    }
+    this._seeking = false;
+  }
 
-  // Boucle fermée : on vise, on lit l'accusé de réception, on renudge.
-  async step(n) {
-    this._pending += n;
+  // UNE frame, exactement.
+  //
+  // Viser `media ± dt` est faux : `dt` est une médiane et la cadence n'est pas
+  // régulière, donc dès qu'il surestime l'intervalle réel on atterrit deux ou
+  // trois frames plus loin — et l'ancienne boucle ne poussait que dans le même
+  // sens, sans jamais rattraper un dépassement.
+  //
+  // Ici on part d'un décalage volontairement TROP PETIT et on l'agrandit jusqu'à
+  // ce que le `mediaTime` change, puis on s'arrête : la première frame atteinte
+  // est forcément la voisine. En arrière c'est presque toujours immédiat, parce
+  // que `media` est la frontière de la frame courante — n'importe quel recul
+  // strictement positif tombe dans la précédente.
+  async _one(dir) {
+    const start = this.media;
+    // Sans rVFC la sonde ne mesure que son propre pas : un déplacement de dt est
+    // moins trompeur qu'une rampe qui n'accuse jamais réception.
+    if (this.rvfc === false) return await this._go(start + dir * this.dt);
+    let eps = this.dt * (dir > 0 ? 0.55 : 0.25);
+    for (let i = 0; i < 8; i++) {
+      const m = await this._go(start + dir * eps);
+      if (dir > 0 ? m > start + 1e-4 : m < start - 1e-4) return m;
+      eps += this.dt * 0.2;
+    }
+    return this.media;
+  }
+
+  // Les appuis s'empilent et se vident une frame à la fois : jamais fusionnés en
+  // un saut, sinon la précision se perd exactement quand on la cherche.
+  async step(dir) {
+    this._pending += Math.sign(dir);
     if (this._busy) return;
     this._busy = true;
     while (this._pending) {
-      const k = this._pending; this._pending = 0;
-      const start = this.media;
-      const eps = this.dt * 0.25;
-      let target = start + k * this.dt;
-      let m = await this._go(target);
-      let guard = 0;
-      while (guard < 6 && ((k > 0 && m < start + eps) || (k < 0 && m > start - eps))) {
-        guard++;
-        target += Math.sign(k) * this.dt * 0.5;
-        m = await this._go(target);
-      }
-      this.media = m; this.tries = guard + 1;
+      const d = Math.sign(this._pending);
+      this._pending -= d;
+      this.media = await this._one(d);
+      this._emit();
     }
     this._busy = false;
-    this._emit();
   }
+
+  // Saut large : approximatif par nature (n × la cadence médiane), et c'est très
+  // bien — il sert à traverser, la lecture de frame dit ensuite la vérité.
+  jump(n) { return this.seek(this.media + n * this.dt); }
 
   // Approximatif par construction : la cadence n'est pas régulière.
   get frameApprox() { return Math.round(this.media / this.dt); }

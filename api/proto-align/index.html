@@ -36,9 +36,13 @@
       </div>
     </main>
 
-    <!-- Navigation vidéo, en temps vidéo : arriver près du geste. -->
+    <!-- La seule réglette de la page : temps vidéo. Elle sert à arriver avant de
+         poser, puis à se promener pour vérifier. Le marqueur montre l'ancre. -->
     <div class="strip">
-      <input id="scrub" type="range" min="0" step="0.01" value="0">
+      <div class="track">
+        <input id="scrub" type="range" min="0" step="0.001" value="0">
+        <span id="scrub-mark" hidden></span>
+      </div>
       <span id="pin-state" class="dim"></span>
     </div>
 
@@ -49,20 +53,6 @@
         <div id="cand-list" class="cands"></div>
         <span id="anchors" class="mono"></span>
         <button id="ok">Confirmer l'alignement</button>
-      </div>
-    </section>
-
-    <!-- Vérification : s'ajoute une fois les deux ancres posées. -->
-    <section id="verify" hidden>
-      <div class="row">
-        <h2>Vérification — le départ retenu est-il le bon&nbsp;?</h2>
-        <span id="cover-lbl" class="dim"></span>
-        <span id="outside" class="warn" hidden>hors couverture vidéo</span>
-        <button id="play" class="ghost">Lire</button>
-      </div>
-      <div class="track">
-        <div id="cover"></div>
-        <input id="transport" type="range" min="0" step="0.01" value="0">
       </div>
     </section>
   </div>

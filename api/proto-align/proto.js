@@ -1,4 +1,4 @@
-// PROTOTYPE JETABLE (#9) — l'interface d'alignement, variante D.
+// PROTOTYPE JETABLE (#9) — l'interface d'alignement.
 //
 // Née du grillage : A, B et C partageaient un modèle de tâche faux. Elles
 // faisaient CORRIGER À L'ŒIL un instant que le serveur avait déjà calculé, ne
@@ -6,18 +6,17 @@
 // 1 s), et rien ne permettait de voir bouger 3 px — la résolution même sur
 // laquelle #7 a calibré son seuil.
 //
-// D repose sur quatre décisions :
+// Quatre décisions :
 //   1. Côté IMU on CHOISIT parmi les candidats de la règle de #7 (2 à 4 par
 //      take), on ne pointe pas. Le premier est retenu, ↑↓ passent au suivant.
-//   2. Côté vidéo un scrubber pour arriver ; ←→ entrent d'eux-mêmes en mode
-//      détail (frame par frame), sans touche de mode à apprendre.
+//   2. Côté vidéo une seule réglette pour arriver ; ←→ entrent d'eux-mêmes en
+//      mode détail (frame par frame), sans touche de mode à apprendre.
 //   3. Voir 3 px = comparateur à bascule : on épingle une frame de repos, on
 //      maintient B pour la flasher. L'écart se cumule depuis le repos, donc un
 //      départ mou finit par crever l'œil.
-//   4. Une fois les deux ancres posées, une timeline de vérification s'ajoute en
-//      bas — graduée dans le temps du take (celui de frame.t), pour répondre à
-//      UNE question : la détection a-t-elle désigné le bon départ ? Si non
-//      l'erreur est de plusieurs secondes : on change de candidat et on repose.
+//   4. Vérifier, c'est se promener AVEC LA MÊME RÉGLETTE une fois les ancres
+//      posées, en regardant le curseur courir sur la courbe. Une timeline en
+//      temps de take a été essayée puis retirée : elle ne disait rien de plus.
 //
 // Pas de roue 3D : le cadrage l'avait conclu, la maquette l'a confirmé.
 //
@@ -32,10 +31,8 @@ const BROKEN = new URLSearchParams(location.search).get("broken") || "";
 const S = {
   takes: [], cur: null, data: null, stepper: null, video: null,
   pick: 0,          // index du candidat retenu
-  vid: null,        // ancre vidéo = mediaTime MESURÉ (#10)
-  pinned: null,     // { t, bitmap } — la frame de repos épinglée
-  detail: false, blink: false, playing: false,
-  seekTake: null,   // temps du take DEMANDÉ au transport, avant que le seek le borne
+  pinned: null,     // { t, canvas } — la frame de repos épinglée
+  detail: false, blink: false, playing: false, dragging: false,
 };
 
 const $ = (s) => document.querySelector(s);
@@ -43,18 +40,21 @@ const key = (t) => `${t.session}/${t.take}`;
 const cands = () => S.data?.candidates ?? [];
 const imu = () => cands()[S.pick]?.t ?? null;
 const noGyro = () => S.data && S.data.curve.length === 0;
+const locked = () => S.cur?.aligned ?? null;   // les ancres posées, figées
+
+// Position courante en temps vidéo — pendant la lecture c'est currentTime qui
+// fait foi (rVFC ne sert qu'au pas-à-pas), en pause c'est le mediaTime mesuré.
+const videoNow = () => !S.stepper ? null
+  : (S.playing ? S.video.currentTime : S.stepper.media);
 
 // take ↔ vidéo : les deux ancres définissent la translation, rien d'autre.
-const toVideo = (t) => S.cur?.aligned
-  ? t - S.cur.aligned.onset_imu_s + S.cur.aligned.onset_video_s : null;
-const toTake = (t) => S.cur?.aligned
-  ? t - S.cur.aligned.onset_video_s + S.cur.aligned.onset_imu_s : null;
+const toTake = (t) => locked() ? t - locked().onset_video_s + locked().onset_imu_s : null;
 
 // ── Données ─────────────────────────────────────────────────────────────────
 async function loadTakes() { S.takes = await api("/api/takes"); }
 
 async function selectTake(t) {
-  S.cur = t; S.vid = null; S.pick = 0; S.pinned = null;
+  S.cur = t; S.pick = 0; S.pinned = null;
   S.detail = false; S.playing = false; S.stepper = null;
   const q = `session=${encodeURIComponent(t.session)}&take=${encodeURIComponent(t.take)}`;
   S.data = await api(`/api/onset?${q}&broken=${BROKEN}`);
@@ -67,11 +67,11 @@ async function selectTake(t) {
 }
 
 async function confirmAlign() {
-  if (imu() == null || S.vid == null) return;
+  if (imu() == null || !S.stepper) return;
   await api("/api/align", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ session: S.cur.session, take: S.cur.take,
-                           onset_imu_s: imu(), onset_video_s: S.vid }),
+                           onset_imu_s: imu(), onset_video_s: S.stepper.media }),
   });
   await loadTakes();
   S.cur = S.takes.find((t) => key(t) === key(S.cur));
@@ -79,8 +79,6 @@ async function confirmAlign() {
 }
 
 // ── Gestes ──────────────────────────────────────────────────────────────────
-function enterDetail() { S.detail = true; }
-
 // L'épinglée est capturée dans un canvas : un <video> n'affiche qu'une frame.
 function pin() {
   if (!S.stepper) return;
@@ -92,13 +90,12 @@ function pin() {
 }
 
 function showBlink(on) {
-  if (S.blink === on) return;
+  if (S.blink === (on && !!S.pinned)) return;
   S.blink = on && !!S.pinned;
   const el = $("#pinned");
   if (S.blink) {
-    const g = el.getContext("2d");
     el.width = S.pinned.canvas.width; el.height = S.pinned.canvas.height;
-    g.drawImage(S.pinned.canvas, 0, 0);
+    el.getContext("2d").drawImage(S.pinned.canvas, 0, 0);
   }
   el.hidden = !S.blink;
   render();
@@ -112,7 +109,6 @@ function cycleCandidate(d) {
 
 function togglePlay() {
   if (!S.stepper) return;
-  S.seekTake = null;
   S.playing = S.video.paused;
   S.playing ? S.video.play() : S.video.pause();
   const tick = () => {
@@ -122,24 +118,22 @@ function togglePlay() {
   tick();
 }
 
-// Position courante en temps vidéo — pendant la lecture c'est currentTime qui
-// fait foi (rVFC ne sert qu'au pas-à-pas), en pause c'est le mediaTime mesuré.
-const videoNow = () => !S.stepper ? null
-  : (S.playing ? S.video.currentTime : S.stepper.media);
-
 function initKeys() {
   addEventListener("keydown", (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (document.activeElement?.tagName === "INPUT") document.activeElement.blur();
     switch (e.key) {
-      case "ArrowRight": case "ArrowLeft":
-        e.preventDefault(); enterDetail(); S.seekTake = null;
-        S.stepper?.step((e.key === "ArrowRight" ? 1 : -1) * (e.shiftKey ? 10 : 1)); break;
+      case "ArrowRight": case "ArrowLeft": {
+        e.preventDefault(); S.detail = true;
+        const d = e.key === "ArrowRight" ? 1 : -1;
+        e.shiftKey ? S.stepper?.jump(d * 10) : S.stepper?.step(d);
+        break;
+      }
       case "ArrowUp":   e.preventDefault(); cycleCandidate(-1); break;
       case "ArrowDown": e.preventDefault(); cycleCandidate(1); break;
       case "e": case "E": e.preventDefault(); pin(); break;
       case "b": case "B": e.preventDefault(); showBlink(true); break;
-      case "Enter": e.preventDefault(); S.vid = S.stepper?.media ?? null; confirmAlign(); break;
+      case "Enter": e.preventDefault(); confirmAlign(); break;
       case " ": e.preventDefault(); togglePlay(); break;
       case "Escape": S.detail = false; render(); break;
     }
@@ -185,15 +179,18 @@ function renderVideoZone() {
 
   const st = S.stepper;
   $("#hud").hidden = !st;
+  const dur = S.video?.duration || 0;
+  $("#scrub-mark").hidden = !(locked() && dur);
+  if (locked() && dur) $("#scrub-mark").style.left = `${locked().onset_video_s / dur * 100}%`;
   if (!st) return;
+
   $("#hud-time").textContent = `${st.media.toFixed(3)} s`;
   $("#hud-frame").textContent = `frame ≈ ${st.frameApprox}`;
   $("#hud-mode").textContent = S.detail ? "détail — frame par frame" : "navigation";
   $("#hud-mode").className = S.detail ? "chip on" : "chip";
   $("#hud-cadence").textContent =
     `cadence ${st.rvfc === false ? "supposée" : "mesurée"} ${(1 / st.dt).toFixed(2)} fps`
-    + (st.spread ? ` (${(st.spread[0] * 1e3).toFixed(1)}–${(st.spread[1] * 1e3).toFixed(1)} ms)` : "")
-    + ` · ${st.tries} aller-retour${st.tries > 1 ? "s" : ""}`;
+    + (st.spread ? ` (${(st.spread[0] * 1e3).toFixed(1)}–${(st.spread[1] * 1e3).toFixed(1)} ms)` : "");
 
   $("#pin-state").innerHTML = S.pinned
     ? `épinglée <b>${S.pinned.t.toFixed(3)} s</b> — maintenir <kbd>B</kbd> pour la flasher`
@@ -201,8 +198,8 @@ function renderVideoZone() {
   $("#blink-tag").hidden = !S.blink;
 
   const sc = $("#scrub");
-  sc.max = S.video.duration || 0;
-  if (document.activeElement !== sc) sc.value = videoNow() ?? 0;
+  sc.max = dur;
+  if (!S.dragging) sc.value = videoNow() ?? 0;
 }
 
 function renderCurve() {
@@ -213,8 +210,10 @@ function renderCurve() {
     wide: i === S.pick, dashed: i !== S.pick,
     label: `${i + 1}. ${c.t.toFixed(2)} s — repos ${c.silence_s} s${i === S.pick ? " ✓" : ""}`,
   }));
+  // Une fois aligné, le curseur de lecture court sur la courbe : c'est LA
+  // vérification, et c'est ce qui a rendu la timeline en temps de take inutile.
   const now = videoNow();
-  if (now != null && S.cur?.aligned) {
+  if (now != null && locked()) {
     markers.push({ t: toTake(now), color: "#f85149", row: cands().length, label: "lecture" });
   }
   drawCurve($("#curve"), { curve: S.data.curve, t0: 0, t1: S.data.duration_s,
@@ -240,28 +239,31 @@ function renderCandidates() {
     b.onclick = () => { S.pick = +b.dataset.i; render(); });
 }
 
-// La timeline de vérification : deux objets superposés au même temps (celui du
-// take, côté IMU) — la courbe au-dessus, le transport en dessous, avec la zone
-// réellement couverte par la vidéo, qui ne couvre pas tout le take.
-function renderVerify() {
-  const on = !!S.cur?.aligned && !!S.stepper;
-  $("#verify").hidden = !on;
-  if (!on) return;
-  const dur = S.data.duration_s;
-  const v0 = toTake(0), v1 = toTake(S.video.duration || 0);
-  $("#cover").style.left = `${Math.max(0, v0 / dur) * 100}%`;
-  $("#cover").style.width = `${(Math.min(dur, v1) - Math.max(0, v0)) / dur * 100}%`;
-  $("#cover-lbl").textContent =
-    `vidéo : ${v0.toFixed(1)} s → ${v1.toFixed(1)} s du take (take ${dur.toFixed(1)} s)`;
-  // Le curseur suit ce qu'on a DEMANDÉ, pas où la vidéo a atterri : au-delà de
-  // sa fin le seek borne, et comparer la position bornée ne signalerait jamais
-  // la sortie de couverture — le take déborde la vidéo des deux côtés.
-  const cur = S.seekTake ?? toTake(videoNow() ?? 0);
-  const t = $("#transport");
-  t.max = dur;
-  if (document.activeElement !== t) t.value = cur;
-  $("#outside").hidden = cur >= v0 && cur <= v1;
-  $("#play").textContent = S.playing ? "Pause" : "Lire";
+// Une fois posées, les ancres sont FIGÉES : elles affichaient la position
+// courante, donc elles défilaient pendant qu'on vérifiait — ce qui revenait à
+// montrer autre chose que ce qui est enregistré.
+function renderAnchors() {
+  const a = locked();
+  if (a) {
+    $("#anchors").innerHTML =
+      `<span class="lock">🔒 posé</span> ancre IMU <b>${a.onset_imu_s.toFixed(3)} s</b>
+       · ancre vidéo <b>${a.onset_video_s.toFixed(3)} s</b>
+       · Δ <b>${(a.onset_video_s - a.onset_imu_s).toFixed(3)} s</b>`;
+    $("#ok").className = "ghost";
+    $("#ok").textContent = "Reposer sur la frame courante";
+    $("#ok").disabled = !S.stepper || imu() == null;
+    return;
+  }
+  $("#anchors").innerHTML =
+    `ancre IMU <b>${fmt(imu())}</b>${cands().length > 1
+      ? ` <span class="dim">(candidat ${S.pick + 1}/${cands().length})</span>` : ""}
+     · frame courante <b>${S.stepper ? S.stepper.media.toFixed(3) + " s" : "—"}</b>
+     <span class="dim">${S.stepper?.rvfc === false ? "repli currentTime"
+       : S.stepper ? "mediaTime mesuré" : ""}</span>`;
+  $("#ok").className = "";
+  $("#ok").disabled = !S.stepper || imu() == null;
+  $("#ok").textContent = S.stepper && imu() != null
+    ? `Confirmer · Δ ${(S.stepper.media - imu()).toFixed(3)} s` : "Confirmer l'alignement";
 }
 
 function render() {
@@ -270,16 +272,7 @@ function render() {
   renderVideoZone();
   renderCurve();
   renderCandidates();
-  renderVerify();
-  $("#anchors").innerHTML =
-    `ancre IMU <b>${fmt(imu())}</b>${cands().length > 1
-      ? ` <span class="dim">(candidat ${S.pick + 1}/${cands().length})</span>` : ""}
-     · ancre vidéo <b>${S.stepper ? S.stepper.media.toFixed(3) + " s" : "—"}</b>
-     <span class="dim">${S.stepper?.rvfc === false ? "repli currentTime"
-       : S.stepper ? "mediaTime mesuré" : ""}</span>`;
-  $("#ok").disabled = !S.stepper || imu() == null;
-  $("#ok").textContent = S.stepper && imu() != null
-    ? `Confirmer · Δ ${(S.stepper.media - imu()).toFixed(3)} s` : "Confirmer l'alignement";
+  renderAnchors();
 }
 
 // ── Démarrage ───────────────────────────────────────────────────────────────
@@ -287,14 +280,18 @@ function render() {
   S.video = $("#v");
   initKeys();
 
-  $("#scrub").oninput = (e) => {
-    S.detail = false; S.seekTake = null; S.stepper?.seek(+e.target.value);
-  };
-  $("#transport").oninput = (e) => {
-    S.seekTake = +e.target.value; S.stepper?.seek(toVideo(S.seekTake));
-  };
-  $("#play").onclick = togglePlay;
-  $("#ok").onclick = () => { S.vid = S.stepper?.media ?? null; confirmAlign(); };
+  // Le <input range> gardait le focus après un clic : la valeur restait figée
+  // au dernier point cliqué pendant la lecture, puis sautait dès qu'on le
+  // relâchait. On suit le pointeur, pas le focus.
+  const sc = $("#scrub");
+  sc.addEventListener("pointerdown", () => { S.dragging = true; });
+  addEventListener("pointerup", () => {
+    if (!S.dragging) return;
+    S.dragging = false; sc.blur(); render();
+  });
+  sc.oninput = (e) => { S.detail = false; S.stepper?.seek(+e.target.value); };
+
+  $("#ok").onclick = confirmAlign;
   $("#pick").onchange = (e) => selectTake(S.takes[e.target.value]);
   $("#curve").onclick = (e) => {                       // cliquer un candidat sur la courbe
     if (!cands().length) return;
@@ -322,7 +319,7 @@ function render() {
   $("#pick").innerHTML = S.takes.map((t, i) =>
     `<option value="${i}">${t.take} — ${t.aligned ? "aligné"
       : t.video_file ? "à aligner" : "sans vidéo"}</option>`).join("");
-  const first = S.takes.findIndex((t) => t.video_file);
-  $("#pick").value = Math.max(0, first);
-  await selectTake(S.takes[Math.max(0, first)]);
+  const first = Math.max(0, S.takes.findIndex((t) => t.video_file));
+  $("#pick").value = first;
+  await selectTake(S.takes[first]);
 })();

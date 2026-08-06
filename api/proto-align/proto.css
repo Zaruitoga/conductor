@@ -26,7 +26,7 @@ html, body { margin:0; height:100%; overflow:hidden; background:var(--bg); color
 
 /* ── La disposition, stable du début à la fin ───────────────────────────── */
 #app { position:absolute; inset:34px 0 0 0;
-  display:grid; grid-template-rows:auto 1fr auto auto auto; }
+  display:grid; grid-template-rows:auto 1fr auto auto; }
 body.warned #app { top:calc(34px + var(--banner, 24px)); }
 
 header { display:flex; align-items:center; gap:12px; padding:6px 12px; flex-wrap:wrap;
@@ -50,10 +50,17 @@ header .keys { flex:1; font-size:11px; line-height:1.25; }
 .chip.on { border-color:var(--accent); color:var(--accent); }
 .warnchip { border-color:var(--warn); color:var(--warn); }
 
-/* ── Scrubber vidéo ─────────────────────────────────────────────────────── */
+/* ── Réglette vidéo (la seule de la page) ───────────────────────────────── */
 .strip { display:flex; align-items:center; gap:12px; padding:7px 12px;
   background:var(--card); border-top:1px solid var(--border); }
-.strip #scrub { flex:1; }
+.strip .track { position:relative; flex:1; height:22px; }
+.strip #scrub { position:absolute; inset:0; width:100%; margin:0; }
+/* Le marqueur d'ancre : sous le curseur, dans la gouttière du range (~7px de
+   marge de chaque côté pour la largeur du pouce). */
+.strip #scrub-mark { position:absolute; top:3px; bottom:3px; width:2px;
+  background:var(--ok); pointer-events:none; margin-left:6px;
+  box-shadow:0 0 0 1px #0d1013; }
+.strip #scrub-mark[hidden] { display:none; }
 .strip #pin-state { font-size:11.5px; white-space:nowrap; }
 
 /* ── Courbe + candidats ─────────────────────────────────────────────────── */
@@ -68,18 +75,8 @@ header .keys { flex:1; font-size:11px; line-height:1.25; }
 .cand .dim { font-size:10.5px; }
 .bar #anchors { flex:1; font-size:12.5px; white-space:nowrap; }
 
-/* ── Vérification ───────────────────────────────────────────────────────── */
-#verify { padding:9px 12px 12px; background:#20262c; border-top:2px solid var(--accent); }
-#verify .row { display:flex; align-items:center; gap:10px; margin-bottom:7px; flex-wrap:wrap; }
-#verify h2 { margin:0; font:600 11px/1 system-ui; text-transform:uppercase;
-  letter-spacing:.06em; color:var(--accent); }
-#verify #cover-lbl { flex:1; font-size:11.5px; }
-.track { position:relative; height:22px; }
-.track #cover { position:absolute; top:7px; height:8px; border-radius:4px;
-  background:#2f4a68; border:1px solid #3f6a99; }
-.track #transport { position:absolute; inset:0; width:100%; margin:0; background:none; }
-
 /* ── Communs ────────────────────────────────────────────────────────────── */
+.lock { color:var(--ok); font-family:system-ui; font-size:11px; }
 button { background:var(--accent); color:#0d1013; border:0; border-radius:5px;
   padding:6px 12px; font:600 13px system-ui; cursor:pointer; }
 button.ghost { background:transparent; color:var(--text); border:1px solid var(--border);

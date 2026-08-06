@@ -42,13 +42,16 @@ pas jugeable.
   maintenu la flashe à la place de la courante. L'écart se **cumule depuis le
   repos**, donc un départ mou finit par crever l'œil — là où une comparaison
   N ↔ N-1 compare à une cible mobile.
-- **Vérification.** Une fois les deux ancres posées : réglette de transport +
-  courbe au-dessus, graduées dans le **temps du take côté IMU** (celui de
-  `frame.t`), avec la **zone réellement couverte par la vidéo** — elle ne couvre
-  pas tout : sur le take 002 la vidéo va de −5,2 s à 44,9 s d'un take de 58,9 s.
-  Elle répond à une seule question : *la détection a-t-elle désigné le bon
-  départ ?* Si non, l'erreur est de plusieurs secondes : on change de candidat et
-  on repose. Pas de correction fine, et **pas de roue 3D**.
+- **Vérification.** Pas de deuxième réglette : une timeline en temps de take a
+  été construite puis **retirée** — elle ne disait rien que la réglette vidéo ne
+  dise déjà. Vérifier, c'est se promener avec la même réglette et regarder le
+  **curseur de lecture courir sur la courbe**. Une seule question : *la détection
+  a-t-elle désigné le bon départ ?* Si non, l'erreur est de plusieurs secondes :
+  on change de candidat et on repose. Pas de correction fine, **pas de roue 3D**.
+- **Les ancres se figent.** Une fois posées elles affichent la valeur
+  enregistrée, verrouillée, et le bouton devient *Reposer sur la frame courante* —
+  elles défilaient pendant la vérification, donc elles montraient autre chose que
+  ce qui est stocké. Un marqueur vert sur la réglette montre l'ancre vidéo.
 
 ## Carte des touches
 
@@ -72,8 +75,11 @@ choix IMU.**
   `FileResponse`, cf. #5).
 - La vraie règle de #7 (`|ω|` brute, silence < 0,5 rad/s pendant ≥ 2 s), rendue
   ici en **liste de candidats** plutôt qu'en proposition unique.
-- Le vrai pas-à-pas de #4 : on vise, on lit le `mediaTime` rapporté, on renudge
-  (le nombre d'aller-retours est affiché).
+- Le vrai pas-à-pas de #4, corrigé : viser `media ± dt` sautait de 1 à 4 frames,
+  parce que `dt` est une médiane et que la cadence n'est pas régulière. On part
+  maintenant d'un décalage **trop petit** et on l'agrandit jusqu'à ce que le
+  `mediaTime` change, puis on s'arrête — la première frame atteinte est forcément
+  la voisine. `⇧` reste un saut approximatif, il sert à traverser.
 - La cadence du fichier est **mesurée** en pause, en poussant le seek de 8 ms
   jusqu'à ce que le `mediaTime` change.
 
