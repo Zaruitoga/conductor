@@ -56,6 +56,7 @@ const toTake = (t) => locked() ? t - locked().onset_video_s + locked().onset_imu
 async function loadTakes() { S.takes = await api("/api/takes"); }
 
 async function selectTake(t) {
+  S.stepper?.dispose();          // sa chaîne rVFC tourne sur le <video> partagé
   S.cur = t; S.pick = 0; S.pinned = null;
   S.detail = false; S.playing = false; S.stepper = null;
   const q = `session=${encodeURIComponent(t.session)}&take=${encodeURIComponent(t.take)}`;
@@ -286,9 +287,9 @@ function render() {
   // fois. `watch` garde `media` collé à la frame affichée pendant la lecture.
   ["play", "pause", "ended"].forEach((ev) => S.video.addEventListener(ev, () => {
     S.playing = !S.video.paused;
-    S.stepper?.watch(S.playing);
     render();
   }));
+  window.__trace = () => S.stepper?.trace;      // (demandé → lu) des derniers seeks
 
   const sc = $("#scrub");
   sc.addEventListener("pointerdown", () => { S.dragging = true; });

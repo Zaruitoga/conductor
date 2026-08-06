@@ -75,21 +75,24 @@ choix IMU.**
   `FileResponse`, cf. #5).
 - La vraie règle de #7 (`|ω|` brute, silence < 0,5 rad/s pendant ≥ 2 s), rendue
   ici en **liste de candidats** plutôt qu'en proposition unique.
-- Le vrai pas-à-pas de #4. Le défaut qui l'a longtemps rendu inutilisable
-  (la flèche droite n'avançait pas, la gauche reculait de deux) tenait à
-  **l'accusé de réception** : faute de rappel `requestVideoFrameCallback` dans le
-  délai, on se rabattait sur `currentTime`, c'est-à-dire l'instant **demandé**.
-  Un seek qui retombait dans la frame courante accusait donc un déplacement qui
-  n'avait pas eu lieu, et `media` dérivait au milieu d'une frame — d'où le recul
-  qui traversait deux frontières. Un seek sans présentation renvoie maintenant
-  `null` : *même frame*.
-  Sur cette base, deux régimes, tous deux exacts : cadence serrée
-  (max ≤ 1,6·min) ⇒ **un seul seek à 1,75·min**, qui dépasse forcément la
-  frontière suivante sans jamais atteindre celle d'après ; sinon on part d'un
-  décalage **trop petit** et on l'agrandit jusqu'à ce que la frame change.
+- Le vrai pas-à-pas de #4, et **la leçon qu'il a coûtée** : `mediaTime` et
+  `currentTime` sont **deux domaines**, et rien ne garantit qu'ils partagent une
+  origine (liste d'édition MP4, flux dont la première frame n'est pas à zéro).
+  Viser « `mediaTime` + un intervalle » revient alors à viser à côté, toujours du
+  même côté — l'avant ne sort jamais de sa frame, l'arrière en franchit deux.
+  C'est le défaut qui a survécu à deux corrections avant d'être nommé.
+  Les demandes vivent maintenant dans `ct` (domaine `currentTime`), les lectures
+  dans `media` (domaine `mediaTime`), et **les deux ne s'additionnent jamais** :
+  on s'éloigne de `ct` par pas de δ jusqu'à ce que le PTS rapporté *change*, et
+  ce changement — pas la valeur atteinte — est la réponse. La distance d'une
+  frame côté demandes s'apprend au passage, d'où une à deux sondes par appui.
   `⇧` reste un saut approximatif, il sert à traverser.
-- La cadence du fichier est **mesurée** en pause, en poussant le seek de 8 ms
-  jusqu'à ce que le `mediaTime` change.
+- La cadence du fichier est **mesurée** en pause, en poussant la demande de 8 ms
+  jusqu'à ce que le PTS change.
+- **Question ouverte pour l'implémentation réelle** : dans quel domaine
+  `onset_video_s` est-il enregistré ? La maquette stocke le `mediaTime`. S'il
+  existe un décalage, ce n'est pas l'instant qu'un lecteur reprendra en visant
+  `currentTime` — cf. #6.
 - **Une seule source de position**, le `mediaTime` de la frame affichée, tenue à
   jour pendant la lecture comme en pause. Lire `currentTime` en lecture et
   `media` en pause faisait basculer la page d'une source à l'autre : `media`,
@@ -97,6 +100,22 @@ choix IMU.**
   au dernier point cliqué — alors que la vidéo, elle, n'avait pas bougé.
 
 Faux exprès : l'alignement confirmé n'est gardé qu'**en mémoire** du serveur.
+
+## Le banc d'essai (`_harness.js`)
+
+Le navigateur intégré ne déclenche **jamais** `requestVideoFrameCallback` : le
+chemin qui compte n'y est pas exerçable, et deux corrections ont été livrées à
+l'aveugle avant celle-ci. Le banc lui substitue un faux `<video>` — grille de
+frames, seek lent, présentation en retard, **décalage entre les deux domaines**.
+Depuis la console de n'importe quel navigateur :
+
+```js
+(await import('/_harness.js')).run('/engine.js')
+```
+
+Il vaut surtout par ce qu'il **reproduit** : sur un décalage de −0,05 s, la
+version précédente brûle 29 seeks sans que la position bouge d'un pouce. C'est
+exactement le symptôme signalé — et le seul mécanisme testé qui le produise.
 
 ## Les états dégradés
 
