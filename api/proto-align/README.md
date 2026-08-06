@@ -75,13 +75,26 @@ choix IMU.**
   `FileResponse`, cf. #5).
 - La vraie règle de #7 (`|ω|` brute, silence < 0,5 rad/s pendant ≥ 2 s), rendue
   ici en **liste de candidats** plutôt qu'en proposition unique.
-- Le vrai pas-à-pas de #4, corrigé : viser `media ± dt` sautait de 1 à 4 frames,
-  parce que `dt` est une médiane et que la cadence n'est pas régulière. On part
-  maintenant d'un décalage **trop petit** et on l'agrandit jusqu'à ce que le
-  `mediaTime` change, puis on s'arrête — la première frame atteinte est forcément
-  la voisine. `⇧` reste un saut approximatif, il sert à traverser.
+- Le vrai pas-à-pas de #4. Le défaut qui l'a longtemps rendu inutilisable
+  (la flèche droite n'avançait pas, la gauche reculait de deux) tenait à
+  **l'accusé de réception** : faute de rappel `requestVideoFrameCallback` dans le
+  délai, on se rabattait sur `currentTime`, c'est-à-dire l'instant **demandé**.
+  Un seek qui retombait dans la frame courante accusait donc un déplacement qui
+  n'avait pas eu lieu, et `media` dérivait au milieu d'une frame — d'où le recul
+  qui traversait deux frontières. Un seek sans présentation renvoie maintenant
+  `null` : *même frame*.
+  Sur cette base, deux régimes, tous deux exacts : cadence serrée
+  (max ≤ 1,6·min) ⇒ **un seul seek à 1,75·min**, qui dépasse forcément la
+  frontière suivante sans jamais atteindre celle d'après ; sinon on part d'un
+  décalage **trop petit** et on l'agrandit jusqu'à ce que la frame change.
+  `⇧` reste un saut approximatif, il sert à traverser.
 - La cadence du fichier est **mesurée** en pause, en poussant le seek de 8 ms
   jusqu'à ce que le `mediaTime` change.
+- **Une seule source de position**, le `mediaTime` de la frame affichée, tenue à
+  jour pendant la lecture comme en pause. Lire `currentTime` en lecture et
+  `media` en pause faisait basculer la page d'une source à l'autre : `media`,
+  jamais rafraîchi pendant la lecture, y ramenait réglette et curseur de courbe
+  au dernier point cliqué — alors que la vidéo, elle, n'avait pas bougé.
 
 Faux exprès : l'alignement confirmé n'est gardé qu'**en mémoire** du serveur.
 

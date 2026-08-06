@@ -42,10 +42,12 @@ const imu = () => cands()[S.pick]?.t ?? null;
 const noGyro = () => S.data && S.data.curve.length === 0;
 const locked = () => S.cur?.aligned ?? null;   // les ancres posées, figées
 
-// Position courante en temps vidéo — pendant la lecture c'est currentTime qui
-// fait foi (rVFC ne sert qu'au pas-à-pas), en pause c'est le mediaTime mesuré.
-const videoNow = () => !S.stepper ? null
-  : (S.playing ? S.video.currentTime : S.stepper.media);
+// UNE seule source de position : le `mediaTime` de la frame affichée, tenu à
+// jour aussi bien pendant la lecture (`watch`) qu'en pause (seek, pas-à-pas).
+// Lire `currentTime` pendant la lecture et `media` en pause faisait basculer la
+// page d'une source à l'autre — et `media`, jamais rafraîchi en lecture, y
+// ramenait tout au dernier point cliqué.
+const videoNow = () => S.stepper?.media ?? null;
 
 // take ↔ vidéo : les deux ancres définissent la translation, rien d'autre.
 const toTake = (t) => locked() ? t - locked().onset_video_s + locked().onset_imu_s : null;
@@ -107,15 +109,12 @@ function cycleCandidate(d) {
   render();
 }
 
+// L'état de lecture se lit sur les événements du <video>, pas sur ce qu'on
+// croit lui avoir demandé : une fin de fichier ou un changement de source
+// laissait `S.playing` vrai.
 function togglePlay() {
   if (!S.stepper) return;
-  S.playing = S.video.paused;
-  S.playing ? S.video.play() : S.video.pause();
-  const tick = () => {
-    if (S.video.paused) { S.playing = false; render(); return; }
-    render(); requestAnimationFrame(tick);
-  };
-  tick();
+  S.video.paused ? S.video.play() : S.video.pause();
 }
 
 function initKeys() {
@@ -189,7 +188,7 @@ function renderVideoZone() {
   $("#hud-mode").textContent = S.detail ? "détail — frame par frame" : "navigation";
   $("#hud-mode").className = S.detail ? "chip on" : "chip";
   $("#hud-cadence").textContent =
-    `cadence ${st.rvfc === false ? "supposée" : "mesurée"} ${(1 / st.dt).toFixed(2)} fps`
+    `cadence ${st.rvfc ? "mesurée" : "supposée"} ${(1 / st.dt).toFixed(2)} fps`
     + (st.spread ? ` (${(st.spread[0] * 1e3).toFixed(1)}–${(st.spread[1] * 1e3).toFixed(1)} ms)` : "");
 
   $("#pin-state").innerHTML = S.pinned
@@ -283,6 +282,14 @@ function render() {
   // Le <input range> gardait le focus après un clic : la valeur restait figée
   // au dernier point cliqué pendant la lecture, puis sautait dès qu'on le
   // relâchait. On suit le pointeur, pas le focus.
+  // Le <video> est réutilisé d'un take à l'autre : ces écouteurs se posent une
+  // fois. `watch` garde `media` collé à la frame affichée pendant la lecture.
+  ["play", "pause", "ended"].forEach((ev) => S.video.addEventListener(ev, () => {
+    S.playing = !S.video.paused;
+    S.stepper?.watch(S.playing);
+    render();
+  }));
+
   const sc = $("#scrub");
   sc.addEventListener("pointerdown", () => { S.dragging = true; });
   addEventListener("pointerup", () => {
