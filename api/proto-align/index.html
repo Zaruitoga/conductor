@@ -7,10 +7,66 @@
   <link rel="stylesheet" href="proto.css">
 </head>
 <body>
-  <!-- Barre de commutation : volontairement hors du design évalué. -->
-  <div id="switch"></div>
+  <!-- Bascule des états dégradés : hors du design évalué. -->
+  <div id="switch">
+    <span class="tag">maquette #9</span>
+    <div id="degraded"></div>
+  </div>
   <div id="banner" hidden></div>
-  <div id="app"></div>
+
+  <div id="app">
+    <header>
+      <select id="pick"></select>
+      <span id="state"></span>
+      <span class="dim keys">← → frame (entre en détail) · ⇧ ×10 · ↑ ↓ candidat IMU ·
+        E épingler · B (maintenu) flasher · Entrée confirmer · Espace lecture · Échap sortir</span>
+    </header>
+
+    <!-- La vidéo garde la plus grande surface : le début d'un mouvement fait 3 px. -->
+    <main id="stage">
+      <video id="v" playsinline></video>
+      <canvas id="pinned" hidden></canvas>
+      <div id="fallback" hidden></div>
+      <div id="hud" hidden>
+        <span id="hud-time" class="mono big"></span>
+        <span id="hud-frame" class="mono"></span>
+        <span id="hud-mode" class="chip"></span>
+        <span id="blink-tag" class="chip warnchip" hidden>épinglée</span>
+        <span id="hud-cadence" class="dim"></span>
+      </div>
+    </main>
+
+    <!-- Navigation vidéo, en temps vidéo : arriver près du geste. -->
+    <div class="strip">
+      <input id="scrub" type="range" min="0" step="0.01" value="0">
+      <span id="pin-state" class="dim"></span>
+    </div>
+
+    <!-- Courbe |ω| brute, en temps du take : choisir le candidat. -->
+    <section class="curvebox">
+      <canvas id="curve"></canvas>
+      <div class="bar">
+        <div id="cand-list" class="cands"></div>
+        <span id="anchors" class="mono"></span>
+        <button id="ok">Confirmer l'alignement</button>
+      </div>
+    </section>
+
+    <!-- Vérification : s'ajoute une fois les deux ancres posées. -->
+    <section id="verify" hidden>
+      <div class="row">
+        <h2>Vérification — le départ retenu est-il le bon&nbsp;?</h2>
+        <span id="cover-lbl" class="dim"></span>
+        <span id="outside" class="warn" hidden>hors couverture vidéo</span>
+        <button id="play" class="ghost">Lire</button>
+      </div>
+      <div class="track">
+        <div id="cover"></div>
+        <input id="transport" type="range" min="0" step="0.01" value="0">
+      </div>
+    </section>
+  </div>
+
   <script type="module" src="proto.js"></script>
 </body>
 </html>

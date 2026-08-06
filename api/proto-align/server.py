@@ -70,37 +70,37 @@ def find_video(take_dir: Path) -> Path | None:
 
 
 def read_curve(csv_path: Path):
-    """Norme du gyro brute + quaternions, en secondes depuis le 1er échantillon."""
-    curve, quats, t0 = [], [], None
+    """Norme du gyro brute, en secondes depuis le 1er échantillon du take."""
+    curve, t0 = [], None
     with csv_path.open(newline="") as f:
         for row in csv.reader(f):
             if not row or row[0] == "ts_rx_us":
                 continue
             ts = int(row[2])
             if t0 is None:
-                t0 = ts
-            t = (ts - t0) / 1e6
-            kind = row[3]
-            if kind == "1" and row[4]:                       # GYRO
+                t0 = ts          # 1re ligne quel que soit son type : c'est la timeline de frame.t
+            if row[3] == "1" and row[4]:                     # GYRO
                 x, y, z = float(row[4]), float(row[5]), float(row[6])
-                curve.append([round(t, 4), round(math.sqrt(x * x + y * y + z * z), 4)])
-            elif kind == "7" and row[7]:                     # GAME_RV
-                quats.append([round(t, 4)] + [round(float(v), 4) for v in row[7:11]])
-    return curve, quats
+                curve.append([round((ts - t0) / 1e6, 4),
+                              round(math.sqrt(x * x + y * y + z * z), 4)])
+    return curve
 
 
-def detect_onset(curve):
-    """#7 : premier échantillon qui met fin à un silence d'au moins 2 s."""
-    silence_start = None
+# #7 retient le PREMIER échantillon qui met fin à un silence d'au moins 2 s.
+# On rend TOUS ceux qui satisfont la règle : le motif se produit 2 à 4 fois par
+# take (roue reposée puis reprise), et départager relève de l'œil humain, pas de
+# l'algorithme. La durée du repos qui précède chacun est l'indice qui les sépare.
+def detect_candidates(curve):
+    out, silence_start = [], None
     for t, w in curve:
         if w < SILENCE_RAD_S:
             if silence_start is None:
                 silence_start = t
         else:
             if silence_start is not None and t - silence_start >= MIN_SILENCE_S:
-                return t
+                out.append({"t": round(t, 4), "silence_s": round(t - silence_start, 2)})
             silence_start = None
-    return None
+    return out
 
 
 async def takes(request):
@@ -123,13 +123,12 @@ async def takes(request):
 
 async def onset(request):
     d = SESSIONS / request.query_params["session"] / "takes" / request.query_params["take"]
-    curve, quats = read_curve(d / "raw.csv")
+    curve = read_curve(d / "raw.csv")
     broken = request.query_params.get("broken")
     return JSONResponse({
-        "onset_imu_s": None if broken == "onset" else detect_onset(curve),
+        "candidates": [] if broken == "onset" else detect_candidates(curve),
         "duration_s": curve[-1][0] if curve else 0,
         "curve": curve,
-        "quats": quats,
         "silence_rad_s": SILENCE_RAD_S,
         "min_silence_s": MIN_SILENCE_S,
     })

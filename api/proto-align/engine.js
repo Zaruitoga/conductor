@@ -1,8 +1,7 @@
-// PROTOTYPE JETABLE (#9) — mécanique partagée par les trois variantes.
+// PROTOTYPE JETABLE (#9) — mécanique partagée.
 //
-// Ce fichier ne contient AUCUNE décision de mise en page : seulement le
-// pas-à-pas vidéo (#4), le tracé de la courbe et la silhouette de roue. Les
-// variantes, elles, ne partagent rien : chacune a son DOM et sa carte de touches.
+// Aucune décision de mise en page ici : seulement le pas-à-pas vidéo (#4) et le
+// tracé de la courbe.
 
 export const api = (p, opt) =>
   fetch(p, opt).then((r) => (r.ok ? r.json() : Promise.reject(new Error(r.status))));
@@ -48,12 +47,11 @@ export class Stepper {
   //
   // Mesurée en PAUSE, en poussant le seek de 8 ms jusqu'à ce que le `mediaTime`
   // rapporté change : les points d'atterrissage successifs SONT les frontières
-  // de frame. Passer par `play()` serait plus court mais dépendrait de
-  // l'autoplay, que le navigateur refuse ici — donc pas une base fiable.
+  // de frame. Passer par `play()` dépendrait de l'autoplay, refusé ici.
   async measure(n = 6) {
     const d = [];
     let cur = await this._go(0);
-    this.rvfc = this.via === "rvfc";        // faux ⇒ tout ce qui s'affiche est un repli
+    this.rvfc = this.via === "rvfc";      // faux ⇒ tout ce qui s'affiche est un repli
     for (let i = 0; i < n; i++) {
       let t = cur, m = cur, guard = 0;
       while (m <= cur + 1e-4 && guard++ < 24) { t += 0.008; m = await this._go(t); }
@@ -118,7 +116,6 @@ export function drawCurve(cv, o) {
 
   g.fillStyle = "#11151a"; g.fillRect(0, 0, w, h);
 
-  // Repères de temps, une graduation lisible quel que soit le zoom.
   const stepChoices = [0.02, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30];
   const stp = stepChoices.find((s) => span / s < Math.max(3, w / 70)) ?? 60;
   g.strokeStyle = "#232a31"; g.fillStyle = "#5c666f"; g.font = "10px system-ui";
@@ -148,48 +145,11 @@ export function drawCurve(cv, o) {
     g.setLineDash(m.dashed ? [3, 3] : []);
     g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); g.setLineDash([]);
     if (m.label) {
-      g.fillStyle = m.color; g.font = "10px system-ui";
-      g.fillText(m.label, Math.min(x + 4, w - 110), 11 + i * 12);   // empilées : elles se superposent
+      g.fillStyle = m.color; g.font = m.wide ? "600 10px system-ui" : "10px system-ui";
+      g.fillText(m.label, Math.min(x + 4, w - 96), 11 + (m.row ?? i) * 12);
     }
   });
-  return { X, ymax, toTime: (px) => t0 + (px / w) * span };
-}
-
-// ── Silhouette de roue, depuis le quaternion du CSV ─────────────────────────
-// Vue de côté : à plat au sol la roue est un trait, debout c'est un cercle.
-export function drawWheel(cv, q) {
-  const dpr = Math.min(devicePixelRatio, 2);
-  const w = cv.clientWidth, h = cv.clientHeight;
-  cv.width = w * dpr; cv.height = h * dpr;
-  const g = cv.getContext("2d");
-  g.setTransform(dpr, 0, 0, dpr, 0, 0);
-  g.fillStyle = "#11151a"; g.fillRect(0, 0, w, h);
-  if (!q) return;
-
-  const [qw, qx, qy, qz] = q;
-  const a = [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy + qw * qz), 2 * (qx * qz - qw * qy)];
-  const b = [2 * (qx * qy - qw * qz), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz + qw * qx)];
-  const u = [2 * (qx * qz + qw * qy), 2 * (qy * qz - qw * qx), 1 - 2 * (qx * qx + qy * qy)];
-
-  const R = Math.min(w, h) * 0.36, cx = w / 2, cy = h / 2;
-  const P = (v, s) => [cx + s * v[0] * R, cy - s * v[2] * R];   // caméra : x→droite, z→haut
-
-  g.strokeStyle = "#2a323a"; g.beginPath();
-  g.moveTo(0, cy + R * 1.15); g.lineTo(w, cy + R * 1.15); g.stroke();
-
-  g.strokeStyle = "#4a9eff"; g.lineWidth = 2; g.beginPath();
-  for (let i = 0; i <= 72; i++) {
-    const th = (i / 72) * Math.PI * 2;
-    const p = [a[0] * Math.cos(th) + b[0] * Math.sin(th), 0,
-               a[2] * Math.cos(th) + b[2] * Math.sin(th)];
-    const [x, y] = [cx + p[0] * R, cy - p[2] * R];
-    i ? g.lineTo(x, y) : g.moveTo(x, y);
-  }
-  g.closePath(); g.stroke();
-
-  g.strokeStyle = "#8a939c"; g.lineWidth = 1; g.beginPath();
-  const [ax, ay] = P(u, -0.5), [bx, by] = P(u, 0.5);
-  g.moveTo(ax, ay); g.lineTo(bx, by); g.stroke();
+  return { X, toTime: (px) => t0 + (px / w) * span };
 }
 
 export const fmt = (s) => (s == null ? "—" : s.toFixed(3) + " s");
