@@ -86,6 +86,7 @@ const mappedImu = () => (S.cur?.aligned && S.video
 // échantillon, pas en temps continu : c'est la vraie granularité de la donnée.
 function imuNudge(n) {
   const c = S.data.curve;
+  if (!c.length) return;
   let i = 0;
   while (i < c.length - 1 && c[i][0] < S.imu) i++;
   S.imu = c[Math.max(0, Math.min(c.length - 1, i + n))][0];
@@ -146,6 +147,13 @@ function curveMarkers() {
 }
 
 const noOnset = () => S.data && S.data.onset_imu_s == null;
+// Découvert en montant la maquette : le take 001 n'a QUE du GAME_RV, zéro gyro.
+// Ce n'est pas « la détection n'a rien trouvé », c'est « la méthode ne s'applique
+// pas » — deux messages différents. (Voir aussi #13.)
+const noGyro = () => S.data && S.data.curve.length === 0;
+const imuHint = () => noGyro()
+  ? `<span class="warn">aucun flux gyro enregistré dans ce take — pas d'ancre IMU possible</span>`
+  : `<span class="warn">aucune proposition — la placer à la main</span>`;
 
 // ═══ VARIANTE A — « Table de montage » ══════════════════════════════════════
 // Hypothèse : la vidéo EST le travail ; la courbe est un ruban qu'on regarde du
@@ -177,6 +185,7 @@ const A = {
     $("#ok").onclick = () => { S.vid = S.stepper?.media ?? null; confirm(); };
     $("#play").onclick = playAligned;
     $("#ribbon").onclick = (e) => {
+      if (noGyro()) return;
       const r = e.target.getBoundingClientRect();
       S.imu = (e.clientX - r.left) / r.width * S.data.duration_s; V.refresh();
     };
@@ -203,7 +212,7 @@ const A = {
     $("#ro").innerHTML = fb ?? readout();
     $("#state").innerHTML = S.cur ? badge(S.cur) : "";
     $("#anchors").innerHTML = `IMU <b>${fmt(S.imu)}</b> ${
-      noOnset() ? `<span class="warn">rien de détecté — cliquer le ruban</span>` : ""} ·
+      noOnset() ? imuHint() + (noGyro() ? "" : " (cliquer le ruban)") : ""} ·
       vidéo <b>${S.stepper ? S.stepper.media.toFixed(3) + " s" : "—"}</b>`;
     $("#ok").disabled = !S.stepper || S.imu == null;
     $("#play").disabled = !S.cur?.aligned;
@@ -248,6 +257,7 @@ const B = {
     $("#ok").onclick = () => confirm();
     $("#play").onclick = playAligned;
     $("#curve").onclick = (e) => {
+      if (noGyro()) return;
       const r = e.target.getBoundingClientRect();
       const w = B.window();
       S.imu = w[0] + (e.clientX - r.left) / r.width * (w[1] - w[0]); V.refresh();
@@ -285,8 +295,7 @@ const B = {
     $("#ro").innerHTML = fb ?? readout();
     $("#zoomlbl").textContent = `fenêtre ±${B.zoom.toFixed(2)} s`;
     $("#cimu").innerHTML = `<h3>Ancre IMU</h3><div class="big">${fmt(S.imu)}</div>
-      <div class="dim">${noOnset() ? `<span class="warn">aucune proposition — la placer à la main
-        (↑↓ ou clic)</span>`
+      <div class="dim">${noOnset() ? imuHint() + (noGyro() ? "" : " (↑↓ ou clic)")
         : S.imu === S.proposal ? `proposée par la détection · silence &lt; ${S.data?.silence_rad_s}
           rad/s pendant ${S.data?.min_silence_s} s`
         : `corrigée à la main · proposition ${fmt(S.proposal)}`}</div>`;
@@ -360,7 +369,7 @@ const C = {
       <div class="step ${S.step === i + 1 ? "on" : S.step > i + 1 ? "done" : ""}">
         <b>${i + 1}. ${s}</b>
         <span class="dim">${[
-          noOnset() ? "aucune proposition — la placer avec ← →"
+          noOnset() ? imuHint() + (noGyro() ? "" : " (← →)")
             : `proposée à ${fmt(S.proposal)}${S.imu !== S.proposal ? ` → corrigée ${fmt(S.imu)}` : ""}`,
           S.stepper ? `frame ≈ ${S.stepper.frameApprox} · ${S.stepper.media.toFixed(3)} s` : "—",
           S.imu != null && S.vid != null ? `Δ ${(S.vid - S.imu).toFixed(3)} s — Entrée`
