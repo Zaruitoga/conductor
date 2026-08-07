@@ -50,8 +50,9 @@ affichée — la seule valeur qui porte le PTS réel (acquis n°10)">caler ici (
     </div>
     <div class="row">
       <label title="Au-delà de cet écart, et seulement au-delà, on écrit
-currentTime. L'acquis n°7 avance ~100 ms ; c'est ce que le prototype vérifie.">seuil
-        <input id="proto-thr" type="number" min="10" max="1000" step="10" value="100"> ms</label>
+currentTime. L'acquis n°7 avance ~100 ms ; mesuré, c'est le pire endroit — juste
+au-dessus du biais naturel, donc franchi sans arrêt. 250 ms : zéro recalage.">seuil
+        <input id="proto-thr" type="number" min="10" max="1000" step="10"> ms</label>
     </div>
 
     <canvas id="proto-chart"></canvas>
@@ -118,6 +119,19 @@ mise en page ne bouge pas. C'est l'A/B qui dit ce que la vidéo coûte."><input 
     c.n ? `${c.fps} fps · ${c.pps} Hz  (n=${c.n})` : "—";
 
   return {
+    /**
+     * Les deux réglages de recalage sont détenus par l'horloge, pas par ce
+     * bloc : les contrôles se remplissent depuis elle au montage, plutôt que
+     * de répéter ses valeurs par défaut dans le HTML — deux copies d'un même
+     * défaut, c'est une divergence qui attend son heure, et un panneau qui
+     * affiche un réglage que le code n'applique pas ment sur le seul point que
+     * ce prototype est là pour mesurer.
+     */
+    syncControls(clock) {
+      modeSel.value = clock.mode;
+      $("proto-thr").value = Math.round(clock.thresholdS * 1000);
+    },
+
     /** Le take suivi, et l'ancre IMU que le backend propose pour lui. */
     setTake(info, align) {
       $("proto-take").textContent = info

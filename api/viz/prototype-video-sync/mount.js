@@ -40,7 +40,11 @@ export function createVideoSyncPrototype({ three, follow }) {
   videoWrap.className = "proto-video-wrap";
   const videoBar = document.createElement("div");
   videoBar.className = "proto-video-bar";
-  videoBar.innerHTML = `<span class="grow">aucune vidéo</span>`;
+  // Le badge d'état vit sur la **scène**, pas seulement dans l'instrument : le
+  // panneau est un échafaudage qui ne survivra pas au prototype, et c'est
+  // pendant la lecture, l'œil sur l'image, qu'on a besoin de savoir qu'elle ne
+  // suit rien. Il reste vide tant que la vidéo suit — `:empty` l'efface.
+  videoBar.innerHTML = `<span class="grow">aucune vidéo</span><span class="proto-state"></span>`;
   const video = document.createElement("video");
   // `muted` n'est pas un choix de confort : sans lui, `play()` est refusé sans
   // geste de l'utilisateur. Le son ne fait pas partie de la question posée.
@@ -56,7 +60,11 @@ export function createVideoSyncPrototype({ three, follow }) {
   const caption = videoBar.querySelector(".grow");
 
   // ── L'horloge, l'anneau, le coût ───────────────────────────────────────────
-  const clock = new VideoSyncClock(video, { thresholdS: 0.1, mode: "seek" });
+  // Le défaut n'est plus celui de l'acquis n°7 (recalage dur seul à 100 ms) mais
+  // celui que la campagne a désigné : trim + recalage dur à 250 ms. Le prototype
+  // s'ouvre donc sur sa propre conclusion, et le réglage de départ reste à un
+  // menu de distance pour refaire la comparaison. Chiffres dans le README.
+  const clock = new VideoSyncClock(video, { thresholdS: 0.25, mode: "both" });
   const rec   = new DriftRecorder();
   const cost  = new CostMeter();
 
@@ -84,6 +92,7 @@ export function createVideoSyncPrototype({ three, follow }) {
     onCopy()        { copyReport(); },
     lastMediaTime: () => lastMediaTime,
   });
+  panel.syncControls(clock);
 
   // ── Les variantes ──────────────────────────────────────────────────────────
   const ctx = { stage, canvasWrap, videoWrap, videoBar, three, follow, onLayout() {} };
@@ -161,7 +170,26 @@ export function createVideoSyncPrototype({ three, follow }) {
     panel.setHint("requestVideoFrameCallback absent — dérive mesurée sur currentTime seul");
   }
 
-  setInterval(() => panel.update(clock, rec, cost), 200);
+  const stateBadge = videoBar.querySelector(".proto-state");
+  setInterval(() => {
+    panel.update(clock, rec, cost);
+    // « suit le replay » est le cas nominal : on ne l'affiche pas, un badge
+    // permanent cesse d'être lu au bout d'une minute. Hors lecture non plus —
+    // une vignette immobile pendant qu'il ne se passe rien n'étonne personne.
+    // Un take sans vidéo n'est pas « non aligné » : il n'y a rien à aligner, et
+    // le bandeau le dit déjà. Deux façons de nommer la même absence en valent
+    // une de trop.
+    const noVideo = videoWrap.classList.contains("proto-no-video");
+    const off = clock.active && !noVideo && clock.stats.state !== "suit le replay";
+    stateBadge.textContent = off ? clock.stats.state : "";
+    videoWrap.classList.toggle("proto-idle", off);
+  }, 200);
+
+  // Les chiffres du ticket ont été relevés d'ici : une campagne (quatre
+  // réglages × une passe chacun) se pilote depuis la console, pas à la souris,
+  // sinon la comparaison porte autant sur l'opérateur que sur le réglage.
+  // Ce n'est pas une API — c'est l'établi ouvert, comme le reste du prototype.
+  window.__proto8 = { clock, rec, cost, panel, load };
 
   function copyReport() {
     const info = catalog.get(currentKey);

@@ -66,6 +66,10 @@ Et dans les trois : le HUD reste-t-il lisible, l'état survit-il à un
 rechargement (il est dans l'URL et le `localStorage`), la vidéo est-elle
 masquable ?
 
+Et surtout, dans les trois : **le take 001 n'a pas de vidéo**, le take 004 en a
+une mais pas d'ancre. Les regarder aussi — c'est la même question posée trois
+fois, et B y perd la moitié de l'écran pour un cadre vide.
+
 **Sur le comportement**, tout est dans le bloc « Prototype #8 » de la colonne
 de gauche :
 
@@ -91,6 +95,65 @@ de gauche :
   vidéo perdues disent le coût vu de l'autre bout.
 - **« copier le relevé »** met tout ça en JSON dans le presse-papier, à coller
   dans le ticket.
+
+## Ce qui a été mesuré
+
+Take 002 de `test-1` (58,9 s d'IMU, vidéo de 50,1 s, donc 50 s de recouvrement),
+une passe complète par réglage. L'ancre vidéo était une estimation grossière :
+l'accord visuel ne prouve rien, mais la **dynamique** de la dérive ne dépend pas
+d'une erreur d'ancre, qui n'est qu'une constante.
+
+À ×1, la dérive de commande (`currentTime` − visé) :
+
+| réglage | biais moyen | rms | max | recalages de seuil / 50 s |
+|---|---|---|---|---|
+| recalage dur, seuil 100 ms | −67 ms | 70 ms | 241 ms | **7** |
+| recalage dur, seuil 250 ms | −112 ms | 113 ms | 124 ms | 0 |
+| trim de vitesse seul | −14 ms | 24 ms | 172 ms | 0 |
+| **trim + recalage dur 250 ms** | **−15 ms** | **21 ms** | 140 ms | **0** |
+
+Le biais est **plat sur toute la passe** (moyenne par tranche de 10 s : −67,
+−73, −71, −65, −60 ms au seuil 100). Ce n'est donc pas une accumulation : les
+deux horloges tournent à la même vitesse — `frame.t` vaut le temps mural à
+0,02 % près, et la vidéo laissée libre à **0,017 %** près (régression sur 41 s).
+Le biais s'installe au premier seek (le temps que la lecture reparte) et n'est
+plus jamais résorbé, parce que rien ne le résorbe. Aucun seuil ne l'enlève —
+seul le trim l'enlève, et c'est tout ce qu'il a à faire.
+
+En vitesse, mode trim + recalage dur, seuil 250 ms :
+
+| vitesse | biais moyen | rms | recalages de seuil |
+|---|---|---|---|
+| ×0,25 | −1,5 ms | 7 ms | 0 |
+| ×1 | −15 ms | 21 ms | 0 à 1 |
+| ×2 | −15 à +10 ms | — | 6 / 25 s réelles |
+| ×4 | −350 ms | 543 ms | 37 / 12,5 s réelles |
+
+Le ralenti — le cas que la carte dit le plus précieux — est le meilleur des
+quatre. À ×4 la vidéo ne suit plus du tout : le décodeur sature, le trim reste
+collé à son plafond de +10 % et les recalages deviennent une saccade continue.
+
+## Refaire ces mesures : lire ceci d'abord
+
+**Chrome met en pause les vidéos muettes d'un onglet caché** (« video-only
+background media was paused to save power »). Une page de viz en arrière-plan
+voit donc sa vidéo s'arrêter, la dérive croître sans borne — mesurée à −1,5 s
+après 40 s — et *seul un recalage dur la rattrape* : le trim, plafonné, ne
+remonte jamais une seconde et demie de retard. Une campagne lancée sur un onglet
+caché mesure ça et rien d'autre. Pour mesurer la synchro elle-même, il faut que
+l'onglet soit **au premier plan**, ou la vidéo non muette.
+
+C'est aussi un résultat de conception, pas seulement une précaution de
+mesure : l'implémentation doit **garder un chemin de recalage dur**, parce que
+le navigateur pausera la vidéo sous ses pieds à chaque changement d'onglet.
+
+**Le fps de la scène n'a pas pu être mesuré ici.** `requestAnimationFrame` est
+suspendu sur un onglet caché : la boucle de rendu Three.js ne tourne pas, le HUD
+affiche `0 fps`, et `requestVideoFrameCallback` ne se déclenche jamais (d'où les
+colonnes `mediaTime` vides). Ce qui *a* été vu : le débit de paquets tient à
+50 Hz de bout en bout et le décodeur perd 0,1 % de ses images. La question du
+budget de thread principal se tranche devant un vrai écran, avec la case
+*vidéo détachée*.
 
 ## Ce que ça touche, et ce qu'il faudra retirer
 

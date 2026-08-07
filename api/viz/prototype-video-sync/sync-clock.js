@@ -25,7 +25,16 @@ const TRIM_TAU_S  = 1.0;
 const TRIM_MAX    = 0.10;
 // Un seek écrit `currentTime` ; la position officielle change tout de suite,
 // mais l'image mettra un GOP à suivre. Inutile d'en redemander un aussitôt.
+//
+// Ce délai se compte en **temps réel**, pas en temps de replay — et ce n'est pas
+// une entorse à « tout le temps vient de Tick.t_us », c'est le même
+// raisonnement que la cadence d'envoi du pont OSC : ce qu'on plafonne ici est un
+// *coût* (un seek prend du thread principal et du décodeur), et un coût se paie
+// par seconde de mur, quelle que soit la vitesse du replay. Compté en temps de
+// replay, le même 0,25 s valait 62 ms de mur à ×4 — mesuré : 114 recalages en
+// 12 s, soit neuf saccades par seconde réelle sur le budget que la page protège.
 const SEEK_COOLDOWN_S = 0.25;
+const nowS = () => performance.now() / 1000;
 
 export const MODES = {
   seek: "recalage dur seul",
@@ -57,7 +66,7 @@ export class VideoSyncClock {
     this.lastFrameT   = null;   // dernier frame.t reçu (s)
     this.lastTargetS  = null;   // temps vidéo visé correspondant
     this.needHardSync = true;   // armé au départ, au reset, à la reprise
-    this._lastSeekAt  = -Infinity;   // en temps de replay, pas en temps réel
+    this._lastSeekAt  = -Infinity;   // en temps réel : c'est un budget de coût
     this._playPending = false;
 
     this.stats = {
@@ -172,7 +181,7 @@ export class VideoSyncClock {
       this.needHardSync = false;
     } else if (Math.abs(drift) > this.thresholdS &&
                this.mode !== "trim" &&
-               t - this._lastSeekAt > SEEK_COOLDOWN_S) {
+               nowS() - this._lastSeekAt > SEEK_COOLDOWN_S) {
       this._seek(target, "seuil");
     } else if (this.mode === "trim" || this.mode === "both") {
       // Rattrapage continu : au lieu de sauter, on joue un peu plus vite ou un
@@ -215,7 +224,7 @@ export class VideoSyncClock {
 
   _seek(target, cause) {
     this.video.currentTime = Math.max(0, Math.min(target, this.video.duration || target));
-    this._lastSeekAt = this.lastFrameT ?? 0;
+    this._lastSeekAt = nowS();
     this.stats.resyncs++;
     this.stats.lastResync = { t: this.lastFrameT, drift: this.stats.drift, cause };
     this.stats.trim = 0;

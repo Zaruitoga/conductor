@@ -59,6 +59,18 @@
 .proto-no-video { background: repeating-linear-gradient(
   45deg, #16181c, #16181c 10px, #1c1f24 10px, #1c1f24 20px); }
 
+/* Le take *a* une vidéo, mais l'image ne suit pas le replay : pas d'ancre, hors
+   plage, pas encore chargée. Mesuré : dans ce cas la vidéo reste sur son image
+   d'attente, et **rien sur la scène ne le dit** — une image figée est
+   exactement ce à quoi ressemble une image juste sur un instant immobile. Se
+   taire ne suffit donc pas : il faut le dire, et le montrer. */
+.proto-video-bar .proto-state {
+  flex: none; padding: 0 6px; border-radius: 3px;
+  background: var(--warn); color: #1a1d21; font-weight: 600;
+}
+.proto-video-bar .proto-state:empty { display: none; }
+.proto-idle video { opacity: .3; filter: grayscale(1); }
+
 /* ── A — incrustation permutable ───────────────────────────────────────────── */
 #stage.proto-a #canvas-container,
 #stage.proto-a .proto-video-wrap { position: absolute; }
@@ -90,11 +102,18 @@
 #stage.proto-c .proto-video-wrap { z-index: 0; border: none; }
 #stage.proto-c #canvas-container { z-index: 1; }
 /* En superposition, le bas de l'écran appartient aux contrôles natifs de la
-   vidéo : le HUD y devient illisible, superposé au chronomètre. Il monte. */
-#stage.proto-c #hud { bottom: auto; top: 12px; }
+   vidéo : le HUD y devient illisible, superposé au chronomètre. Il monte —
+   mais sous le bandeau, qui occupe déjà le haut. */
+#stage.proto-c #hud { bottom: auto; top: 40px; }
+
+/* Le canvas est *au-dessus* de la vidéo (c'est le principe de C) et recouvrait
+   donc son bandeau : le nom du fichier et le badge d'état passaient derrière
+   une couche transparente, lisibles à moitié. Le bandeau remonte au-dessus des
+   deux — il dit ce que l'image fait, il ne peut pas être la chose masquée. */
+#stage.proto-c .proto-video-bar { position: relative; z-index: 4; }
 
 #stage.proto-c .proto-opacity {
-  position: absolute; z-index: 3; top: 10px; right: 12px;
+  position: absolute; z-index: 5; top: 40px; right: 12px;
   display: flex; align-items: center; gap: 8px;
   padding: 5px 10px; border-radius: 6px;
   background: rgba(26, 29, 33, .88); border: 1px solid var(--border);

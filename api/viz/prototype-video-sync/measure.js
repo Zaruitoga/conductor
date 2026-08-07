@@ -47,6 +47,12 @@ export class DriftRecorder {
   summary() {
     let max = 0, sum = 0, sumSq = 0, cnt = 0;
     let maxM = 0, cntM = 0, sumSqM = 0;
+    // Les recalages comptent par cause, parce qu'ils ne coûtent pas la même
+    // chose : un « reset » est structurel (un par tour de boucle, inévitable et
+    // voulu), un « seuil » est une saccade en pleine lecture — c'est celui-là,
+    // et lui seul, que le réglage doit faire tomber à zéro.
+    const parCause = {};
+    for (const m of this.marks) parCause[m.cause] = (parCause[m.cause] || 0) + 1;
     for (let i = 0; i < this.n; i++) {
       const v = this.d[i];
       if (Number.isFinite(v)) {
@@ -63,6 +69,8 @@ export class DriftRecorder {
       media_max_ms:   cntM ? +(maxM * 1000).toFixed(1) : null,
       media_rms_ms:   cntM ? +(Math.sqrt(sumSqM / cntM) * 1000).toFixed(1) : null,
       recalages:      this.marks.length,
+      recalages_seuil: parCause.seuil || 0,
+      par_cause:      parCause,
       duree_s:        this.n ? +(this.t[this.n - 1] - this.t[0]).toFixed(1) : 0,
     };
   }
