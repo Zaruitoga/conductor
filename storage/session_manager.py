@@ -23,12 +23,17 @@ session survive an orchestrator restart mid-séance.
 """
 
 import json
+import logging
 import os
 import re
 import subprocess
 import unicodedata
 from datetime import datetime
 from dataclasses import dataclass, field, asdict
+
+from storage.paths import UnsafePath, confine, is_video_filename
+
+log = logging.getLogger("session_manager")
 
 SESSIONS_DIR = "sessions"
 ACTIVE_FILE  = ".active"
@@ -154,7 +159,7 @@ class SessionManager:
             with open(self._active_path()) as f:
                 name = f.read().strip()
             return self.load_session(name)
-        except (FileNotFoundError, json.JSONDecodeError, TypeError):
+        except (FileNotFoundError, json.JSONDecodeError, TypeError, UnsafePath):
             return None
 
     def active_tree(self) -> dict | None:
@@ -233,7 +238,18 @@ class SessionManager:
         self._write_take_meta(take_dir, meta)
 
     def update_take(self, session: str, take: str, fields: dict) -> TakeMeta:
-        """Patch editable fields of any take. Raises FileNotFoundError if absent."""
+        """
+        Patch editable fields of any take. Raises FileNotFoundError if absent.
+
+        `video_file` is checked here rather than only at the API boundary: it is
+        the one editable field that later becomes a path, so the rule belongs
+        next to the write.  An empty string stays legal — that is how the field
+        is cleared.
+        """
+        video = fields.get("video_file")
+        if video not in (None, "") and not is_video_filename(video):
+            raise UnsafePath(f"Not a video filename: {video!r}")
+
         take_dir = self.take_path(session, take)
         meta = self.load_take(take_dir)
         for k, v in fields.items():
@@ -258,7 +274,12 @@ class SessionManager:
 
         out = []
         for name in entries:
-            session_dir = self.session_path(name)
+            try:
+                session_dir = self.session_path(name)
+            except UnsafePath:
+                log.warning(f"Session {name!r} resolves outside "
+                            f"{self.sessions_dir}/ — skipped")
+                continue
             if not os.path.isfile(os.path.join(session_dir, "session.json")):
                 continue
             try:
@@ -269,8 +290,26 @@ class SessionManager:
         return out
 
     def list_takes(self, session: str) -> list[dict]:
-        """Take metadata of one session, in index order (raw.csv required)."""
-        takes_dir = os.path.join(self.session_path(session), "takes")
+        """
+        Take metadata of one session, in index order (raw.csv required).
+
+        The names here come from `os.listdir` of the tree, not from a request:
+        nothing is validated for *shape*, so a take named by hand keeps listing.
+        The consequence is deliberate — a take renamed to something the API's own
+        shape rule refuses is still shown, and answers 422 on a PATCH or a replay
+        rather than vanishing.  A request is judged; a directory is not.
+
+        Only a take that resolves outside sessions/ is dropped, which costs a
+        take symlinked onto another disk its listing.  That is the one case the
+        two rules genuinely disagree about, and it is settled toward playback:
+        the same check refuses to replay it, so listing it would promise a replay
+        that will not happen.  Silence is what this loop is prone to (it already
+        swallows an unreadable take.json), hence the log line.
+        """
+        try:
+            takes_dir = os.path.join(self.session_path(session), "takes")
+        except UnsafePath:
+            return []
         try:
             entries = sorted(os.listdir(takes_dir))
         except FileNotFoundError:
@@ -278,7 +317,12 @@ class SessionManager:
 
         out = []
         for name in entries:
-            take_dir = os.path.join(takes_dir, name)
+            try:
+                take_dir = self.take_path(session, name)
+            except UnsafePath:
+                log.warning(f"Take {session}/{name!r} resolves outside "
+                            f"{self.sessions_dir}/ — skipped")
+                continue
             if not os.path.isfile(self.csv_path(take_dir)):
                 continue
             try:
@@ -296,12 +340,40 @@ class SessionManager:
             return TakeMeta(**json.load(f))
 
     # ── Paths ───────────────────────────────────────────────────────────────
+    # Every path built from a name goes through storage/paths.py:confine(), which
+    # is what closes all the callers at once — the ones here and the ones not
+    # written yet — rather than each route validating on its own.  See that
+    # module for why `normpath` would not be enough.  A refusal raises
+    # UnsafePath; the routes turn it into a 400, and the listings below treat it
+    # like any other unreadable entry.
 
     def session_path(self, session: str) -> str:
-        return os.path.join(self.sessions_dir, session)
+        """Absolute path of one session directory. Raises UnsafePath if the name
+        would leave sessions/."""
+        return confine(self.sessions_dir, session)
 
     def take_path(self, session: str, take: str) -> str:
-        return os.path.join(self.sessions_dir, session, "takes", take)
+        """
+        Absolute path of one take directory. Raises UnsafePath likewise.
+
+        Confined twice, once per untrusted segment: a single resolution of the
+        whole chain would accept `take_path("a", "..")`, which is the session's
+        own directory — inside sessions/, and not a take.
+        """
+        return confine(os.path.join(self.session_path(session), "takes"), take)
+
+    def video_path(self, session: str, take: str, filename: str) -> str:
+        """
+        Absolute path of a video file inside one take.
+
+        `video_file` is a free string edited through PATCH, so its shape is
+        checked here as well as at the API boundary, and the result is confined
+        to the take's own directory — a symlink planted inside the take is the
+        case the extension whitelist alone would not catch.
+        """
+        if not is_video_filename(filename):
+            raise UnsafePath(f"Not a video filename: {filename!r}")
+        return confine(self.take_path(session, take), filename)
 
     def csv_path(self, take_dir: str) -> str:
         return os.path.join(take_dir, "raw.csv")
