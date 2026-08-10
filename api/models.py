@@ -1,6 +1,18 @@
 """api/models.py — Pydantic request bodies for the control API."""
 
-from pydantic import BaseModel
+from typing import Annotated
+
+from pydantic import BaseModel, StringConstraints, field_validator
+
+from storage.paths import MAX_NAME_LEN, NAME_PATTERN, VIDEO_EXTENSIONS, is_video_filename
+
+# One directory name under sessions/, and nothing else — no separator, no `..`,
+# no absolute path. Declared rather than checked in a handler, so a malformed
+# name is a 422 that never reaches one, and so a route added later inherits the
+# rule by writing the annotation. See storage/paths.py for the shape itself and
+# for the second layer that closes the callers this one does not cover.
+PathSegment = Annotated[str, StringConstraints(pattern=NAME_PATTERN,
+                                               max_length=MAX_NAME_LEN)]
 
 
 class HostConfig(BaseModel):
@@ -57,11 +69,26 @@ class TakeUpdate(BaseModel):
     video_file: str | None = None
     video_sync_time_s: float | None = None
 
+    @field_validator("video_file")
+    @classmethod
+    def _bare_video_filename(cls, v: str | None) -> str | None:
+        """
+        A filename, never a path: this field is what a GET .../video would open,
+        and it is the one editable string that becomes one.  "" stays legal —
+        that is how the field is cleared.
+        """
+        if v in (None, "") or is_video_filename(v):
+            return v
+        raise ValueError(
+            "video_file doit être un nom de fichier seul (sans / ni ..), "
+            f"avec une extension vidéo : {', '.join(sorted(VIDEO_EXTENSIONS))}"
+        )
+
 
 class PlaybackRequest(BaseModel):
     """Playback start body."""
-    session: str
-    take: str
+    session: PathSegment
+    take: PathSegment
     speed: float = 1.0
     loop: bool = False
 

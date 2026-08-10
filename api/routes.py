@@ -15,12 +15,13 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 import config
 import core
 from api.models import (
-    HostConfig, SimpleSlotConfig, SuperSlotConfig,
+    HostConfig, PathSegment, SimpleSlotConfig, SuperSlotConfig,
     SessionCreate, SessionUpdate, TakeStart, TakeUpdate, PlaybackRequest,
     ParamUpdate, ProfileRequest, SignalToggle,
     OscRouteCreate, OscRouteUpdate, OscSettings, OscLiveRefresh,
 )
 from osc import targets as osc_targets
+from storage.paths import UnsafePath
 
 router = APIRouter(prefix="/api")
 
@@ -319,7 +320,16 @@ async def list_sessions() -> dict:
 
 
 @router.patch("/sessions/{session}/takes/{take}")
-async def update_take(session: str, take: str, req: TakeUpdate) -> dict:
+async def update_take(session: PathSegment, take: PathSegment,
+                      req: TakeUpdate) -> dict:
+    """
+    Patch one take's metadata.
+
+    Both names are `PathSegment`, so a `..` — which Starlette passes through
+    unnormalised outside StaticFiles — is a 422 before this body runs.  The
+    UnsafePath catch below is the second layer: a well-shaped name can still
+    resolve out of the tree through a symlink.
+    """
     rec = core.csv_logger
     if rec.active and rec._meta and rec._meta.name == take:
         raise HTTPException(409, "Take is being recorded — stop it first")
@@ -327,6 +337,8 @@ async def update_take(session: str, take: str, req: TakeUpdate) -> dict:
         meta = core.session_manager.update_take(
             session, take, req.model_dump(exclude_none=True)
         )
+    except UnsafePath as e:
+        raise HTTPException(400, str(e))
     except FileNotFoundError:
         raise HTTPException(404, f"Take not found: {session}/{take}")
     return {"take": meta.name}
@@ -341,7 +353,11 @@ async def playback_start(req: PlaybackRequest) -> dict:
     if core.playback_engine.active:
         raise HTTPException(409, "Playback already active")
     sm = core.session_manager
-    if not os.path.exists(sm.csv_path(sm.take_path(req.session, req.take))):
+    try:
+        csv_path = sm.csv_path(sm.take_path(req.session, req.take))
+    except UnsafePath as e:
+        raise HTTPException(400, str(e))
+    if not os.path.exists(csv_path):
         raise HTTPException(404, f"Take not found: {req.session}/{req.take}")
     await core.playback_engine.start(
         req.session, req.take, core.queue, core.model.reset, req.speed, req.loop
