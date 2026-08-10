@@ -368,14 +368,29 @@ async def take_pose_track(session: str, take: str,
     if not os.path.exists(sm.csv_path(sm.take_path(session, take))):
         raise HTTPException(404, f"Take not found: {session}/{take}")
 
-    rec = core.csv_logger
-    if not (rec.active and rec._meta and rec._meta.name == take):
+    if not _is_being_recorded(session, take):
         # Never compute from a CSV still being appended to: the run would finish
         # early, stamp itself complete, and that truncated track would never be
         # recomputed. A take being recorded simply has no track yet.
         await core.pose_tracks.ensure(session, take)
 
-    return core.pose_tracks.read(session, take, start=start, end=end, points=points)
+    return await core.pose_tracks.read(session, take, start=start, end=end,
+                                       points=points)
+
+
+def _is_being_recorded(session: str, take: str) -> bool:
+    """
+    Is this exact take the one the CSV logger currently has open?
+
+    The session has to be part of the comparison: take names are `NNN_slug` and
+    restart at 001 in every session, so matching on the name alone would call a
+    different session's `001_essai` "being recorded".
+    """
+    rec = core.csv_logger
+    if not (rec.active and rec._meta and rec._meta.name == take):
+        return False
+    active = core.session_manager.active_session()
+    return active is not None and active.name == session
 
 
 @router.patch("/sessions/{session}/takes/{take}")

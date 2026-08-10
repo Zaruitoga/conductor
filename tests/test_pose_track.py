@@ -33,7 +33,7 @@ from model.registry import SIGNALS
 from simulator.motion import WheelMotion
 from storage.csv_logger import CSVLogger
 from storage.pose_track import (
-    HEADER, RECORD, PoseTrackService, PoseTrackWriter,
+    COLUMNS, HEADER_STRUCT, RECORD_STRUCT, PoseTrackService, PoseTrackWriter,
     compute_pose_track, read_header, read_poses,
 )
 from storage.session_manager import SessionManager
@@ -141,10 +141,10 @@ def test_a_missing_component_stays_a_hole():
 
 def test_the_record_size_is_what_the_sizing_assumed():
     """~3.2 MB for 15 min at 100 Hz is what made a file next to the take cheap."""
-    assert RECORD.size == 36
-    assert HEADER.size == 28
+    assert RECORD_STRUCT.size == 36
+    assert HEADER_STRUCT.size == 28
     fifteen_minutes = 15 * 60 * int(HZ)
-    assert abs(HEADER.size + fifteen_minutes * RECORD.size - 3.24e6) < 1e4
+    assert abs(HEADER_STRUCT.size + fifteen_minutes * RECORD_STRUCT.size - 3.24e6) < 1e4
 
 
 # ── The geometry stamp ───────────────────────────────────────────────────────
@@ -215,7 +215,7 @@ def test_a_half_written_record_is_not_read():
             w.append(i / HZ, 1.0, 0.0, 0.0, 0.0, float(i), 0.0, 1.05)
 
     with open(path, "ab") as f:
-        f.write(b"\x00" * (RECORD.size - 1))       # an append caught in flight
+        f.write(b"\x00" * (RECORD_STRUCT.size - 1))       # an append caught in flight
 
     assert read_header(path).records == 4
     assert len(read_poses(path)["t"]) == 4
@@ -224,8 +224,7 @@ def test_a_half_written_record_is_not_read():
 def test_an_absent_track_is_not_an_error():
     missing = _tmp_track()
     assert read_header(missing) is None
-    assert read_poses(missing) == {c: [] for c in
-                                   ("t", "qw", "qx", "qy", "qz", "x", "y", "z")}
+    assert read_poses(missing) == {c: [] for c in COLUMNS}
 
 
 # ── Windowing and thinning ───────────────────────────────────────────────────
@@ -355,6 +354,83 @@ def test_a_take_is_computed_once_however_often_it_is_opened():
         assert again["status"] == "ready"
         assert os.path.getmtime(take.pose) == mtime
         return svc
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        take.close()
+
+
+def test_reading_a_track_still_filling_gives_poses_and_progress_together():
+    """
+    What the sweep actually calls. The reply must carry the poses *and* how far
+    the computation has got, agreeing with each other: a `records` that did not
+    match the poses beside it would leave a caller unable to tell "still
+    filling" from "something is wrong". And a track mid-computation must serve
+    what it has rather than refuse — the sweep is alive to the limit reached.
+    """
+    take = _Take(_packets(seconds=3.0))
+
+    async def scenario():
+        svc = PoseTrackService(take.sm)
+        await svc.ensure(take.session, take.take)
+
+        served_while_filling = False
+        while True:
+            body = await svc.read(take.session, take.take)
+            assert body["count"] == body["records"], \
+                "the progress and the poses disagree"
+            assert len(body["poses"]["qw"]) == body["count"]
+            if body["status"] == "computing":
+                served_while_filling = True
+                assert body["complete"] is False
+            else:
+                break
+            await asyncio.sleep(0.005)
+
+        assert served_while_filling, "the track finished before it could be read"
+        assert body["status"] == "ready" and body["complete"] is True
+        assert body["count"] == 300
+        assert body["duration_s"] == body["poses"]["t"][-1]
+        assert body["geometry"]["matches"] is True
+
+        # A window narrows the poses without touching what progress reports —
+        # they answer different questions.
+        window = await svc.read(take.session, take.take, start=1.0, end=1.2)
+        assert window["records"] == 300 and window["count"] == 21
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        take.close()
+
+
+def test_deleting_a_broken_track_lets_the_next_open_recompute_it():
+    """
+    A file that is not a pose track is remembered so it is not overwritten — it
+    is the only evidence of what went wrong. But that memory must die with the
+    file, or the documented recovery (delete it and reopen the take) would do
+    nothing at all.
+    """
+    take = _Take(_packets(seconds=2.0))
+
+    async def scenario():
+        svc = PoseTrackService(take.sm)
+        with open(take.pose, "wb") as f:
+            f.write(b"not a pose track at all, really")
+
+        broken = await svc.ensure(take.session, take.take)
+        assert broken["status"] == "failed" and broken["error"]
+        assert broken["records"] == 0, "nothing was read from it"
+
+        os.remove(take.pose)
+        await svc.ensure(take.session, take.take)
+        while svc.status(take.session, take.take)["status"] == "computing":
+            await asyncio.sleep(0.01)
+
+        done = svc.status(take.session, take.take)
+        assert done["status"] == "ready" and done["records"] == 200
+        assert done["error"] is None
 
     try:
         asyncio.run(scenario())

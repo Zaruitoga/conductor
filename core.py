@@ -440,8 +440,9 @@ async def shutdown() -> None:
         csv_logger.stop()
     if playback_engine.active:
         playback_engine.stop()
-    # A half-written track is safe to abandon: the completion flag is only
-    # stamped at the end, so the next open recomputes it from row 0.
+    # Stops waiting on them; a worker thread already under way finishes its
+    # track (see cancel_all). One caught genuinely mid-write is what the
+    # completion flag covers — the next open recomputes it from row 0.
     pose_tracks.cancel_all()
 
     for task in _tasks:
