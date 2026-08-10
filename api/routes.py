@@ -418,8 +418,7 @@ async def update_take(session: PathSegment, take: PathSegment,
     UnsafePath catch below is the second layer: a well-shaped name can still
     resolve out of the tree through a symlink.
     """
-    rec = core.csv_logger
-    if rec.active and rec._meta and rec._meta.name == take:
+    if _is_being_recorded(session, take):
         raise HTTPException(409, "Take is being recorded — stop it first")
     try:
         meta = core.session_manager.update_take(
