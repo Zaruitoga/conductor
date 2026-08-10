@@ -153,7 +153,18 @@ async def reset_params() -> dict:
 
 @router.post("/model/params/save")
 async def save_profile(req: ProfileRequest) -> dict:
-    core.model.params.save_profile(req.name)
+    """
+    Write the current values as a named profile.
+
+    `name` is a `PathSegment`, so a name that is a path is a 422 before this
+    body runs. The UnsafePath catch is the second layer, exactly as on
+    `update_take`: a well-shaped name can still resolve out of `params/`
+    through a symlink planted there.
+    """
+    try:
+        core.model.params.save_profile(req.name)
+    except UnsafePath as e:
+        raise HTTPException(400, str(e))
     return core.model.params.snapshot()
 
 
@@ -161,6 +172,8 @@ async def save_profile(req: ProfileRequest) -> dict:
 async def load_profile(req: ProfileRequest) -> dict:
     try:
         core.model.params.load_profile(req.name)
+    except UnsafePath as e:
+        raise HTTPException(400, str(e))
     except FileNotFoundError:
         raise HTTPException(404, f"Profil introuvable : {req.name}")
     return core.model.params.snapshot()
@@ -461,7 +474,11 @@ async def osc_route_test(route_id: str) -> dict:
 
 @router.post("/osc/routes/save")
 async def osc_routes_save(req: ProfileRequest) -> dict:
-    core.osc_routes.save_profile(req.name)
+    """Same two layers as `/model/params/save` — see it for the reasoning."""
+    try:
+        core.osc_routes.save_profile(req.name)
+    except UnsafePath as e:
+        raise HTTPException(400, str(e))
     return core.osc_routes_dict()
 
 
@@ -469,6 +486,8 @@ async def osc_routes_save(req: ProfileRequest) -> dict:
 async def osc_routes_load(req: ProfileRequest) -> dict:
     try:
         core.osc_routes.load_profile(req.name)
+    except UnsafePath as e:
+        raise HTTPException(400, str(e))
     except FileNotFoundError:
         raise HTTPException(404, f"Mapping introuvable : {req.name}")
     return core.osc_routes_dict()

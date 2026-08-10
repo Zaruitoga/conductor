@@ -27,6 +27,8 @@ import os
 import uuid
 from dataclasses import asdict, dataclass, replace
 
+from storage.paths import confine
+
 log = logging.getLogger("osc.routes")
 
 MAPPINGS_DIR    = "mappings"
@@ -141,9 +143,16 @@ class RouteTable:
     # a directory, one active at a time.
 
     def profile_path(self, name: str) -> str:
-        return os.path.join(self._dir, f"{name}.json")
+        """
+        Absolute path of one mapping file, confined to `mappings/` — same
+        builder, same defect and same fix as `ParamStore.profile_path()`; see
+        the reasoning there.
+        """
+        return confine(self._dir, f"{name}.json")
 
     def list_profiles(self) -> list[str]:
+        """Every mapping on disk. Not routed through `profile_path()`: these
+        names come from `os.listdir` and are not input to validate."""
         try:
             return sorted(f[:-5] for f in os.listdir(self._dir) if f.endswith(".json"))
         except FileNotFoundError:

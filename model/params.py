@@ -34,6 +34,8 @@ import logging
 import os
 from dataclasses import dataclass, asdict
 
+from storage.paths import confine
+
 log = logging.getLogger("model.params")
 
 PARAMS_DIR      = "params"
@@ -129,9 +131,32 @@ class ParamStore:
     # ── Profiles on disk ─────────────────────────────────────────────────────
 
     def profile_path(self, name: str) -> str:
-        return os.path.join(self._dir, f"{name}.json")
+        """
+        Absolute path of one profile file. Raises UnsafePath if `name` would
+        leave `params/`.
+
+        `os.path.join` drops every component preceding an absolute one, so this
+        used to *be* `/tmp/pwned.json` for `save_profile("/tmp/pwned")` — no
+        `..` needed, a leading `/` was enough, and the only thing bounding it
+        was the fixed `.json` suffix nobody chose as a defence.  Confining here
+        rather than in the routes closes `save_profile` and `load_profile` at
+        once, including callers not written yet.
+
+        The suffix is inside the confined segment on purpose: what must stay
+        under the root is the file actually opened, not the name it came from.
+        """
+        return confine(self._dir, f"{name}.json")
 
     def list_profiles(self) -> list[str]:
+        """
+        Every profile on disk — deliberately *not* routed through
+        `profile_path()`.
+
+        These names come from `os.listdir`, so they are not input to be
+        validated: a profile saved before the shape rule existed must keep
+        listing, even though loading it now answers 422.  A listing that hid it
+        would make the file unreachable *and* invisible.
+        """
         try:
             return sorted(
                 f[:-5] for f in os.listdir(self._dir) if f.endswith(".json")
