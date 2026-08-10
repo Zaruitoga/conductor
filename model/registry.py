@@ -246,6 +246,22 @@ class Registry:
     def spec(self, name: str) -> SignalSpec | None:
         return self._specs.get(name)
 
+    def isolated(self) -> "Registry":
+        """
+        The same declared signals, with their own switches and error counters.
+
+        `disabled`, `errors` and `last_error` are the only mutable state here,
+        and they are *session* state, not declarations.  A batch run — the pose
+        track computation, a test — that shared them would write a file whose
+        contents depend on which signals someone happened to switch off in the
+        Signaux tab, and would bump the counters the panel reads.  The specs
+        themselves are frozen dataclasses around pure functions, so a shallow
+        copy is a real separation, not a half one.
+        """
+        twin = Registry()
+        twin._specs = dict(self._specs)
+        return twin
+
     @property
     def names(self) -> list[str]:
         return sorted(self._specs)

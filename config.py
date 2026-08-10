@@ -40,7 +40,12 @@ OSC_SEND_PORT   = 11000         # AbletonOSC's command port
 OSC_LISTEN_PORT = 11001         # AbletonOSC's reply port — we listen here
 OSC_RATE_HZ     = 30.0          # default cap on continuous-route sends
 
-# Torus geometry
+# Torus geometry — the single source, read by model/signals/wheel.py,
+# GET /api/config and simulator/motion.py alike. These are *measurements* of
+# the wheel, not settings: they were deliberately taken off the parameter
+# surface (ADR 0004), because a pose track is precomputed from them and moving
+# either mid-séance would silently invalidate every track already on disk.
+# Swapping wheels means editing here and restarting.
 R_TORE = 1.0             # major radius (metres)
 r_TORE = 0.05            # tube radius (metres)
 
