@@ -49,16 +49,16 @@ async def get_config() -> dict:
     What external clients need to configure themselves.
 
     Used by the 3D visualiser (/viz/) so it hardcodes neither the downstream
-    stream port nor the wheel dimensions.  The geometry comes from the live
-    parameters rather than from config.py: swapping wheels between two takes
-    changes the model's numbers, and a visualiser drawing the old diameter would
-    quietly disagree with the position it is rendering.
+    stream port nor the wheel dimensions.  The geometry comes from config.py,
+    which is also what the model reads (model/signals/wheel.py) and what a pose
+    track is stamped with — one number, one source, so a visualiser can never
+    draw a diameter the recorded positions disagree with.
     """
     return {
         "ws_port":  config.WS_PORT,
         "geometry": {
-            "R_TORE": core.model.params.get("wheel_R_m"),
-            "r_TORE": core.model.params.get("wheel_r_m"),
+            "R_TORE": config.R_TORE,
+            "r_TORE": config.r_TORE,
         },
     }
 
@@ -289,10 +289,33 @@ async def recording_start(req: TakeStart) -> dict:
 
 @router.post("/recording/stop")
 async def recording_stop() -> dict:
+    """
+    Close the take, then start computing its pose track in the background.
+
+    This is the track's normal producer — computing it here rather than on the
+    first read means it is usually already there when someone opens the take,
+    and it is the only moment at which we know for certain that the CSV has
+    stopped growing.  It returns straight away; the model runs at 50–77× real
+    time in a worker thread, and the track is readable as it fills.
+    """
     if not core.csv_logger.active:
         raise HTTPException(409, "No active recording")
+
+    session = core.session_manager.active_session()
+    meta    = core.csv_logger._meta
+    take    = meta.name if meta else None
+
     core.csv_logger.stop()
-    return {"active": False}
+
+    track = None
+    if session is not None and take is not None:
+        try:
+            track = await core.pose_tracks.ensure(session.name, take)
+        except FileNotFoundError:
+            # No CSV to work from. The recording still stopped, and saying so is
+            # the answer to this request — the track is a separate concern.
+            pass
+    return {"active": False, "pose_track": track}
 
 
 @router.post("/recording/marker")
@@ -316,6 +339,43 @@ async def recording_status() -> dict:
 async def list_sessions() -> dict:
     """Full tree: every session's metadata with its takes' metadata."""
     return {"sessions": core.session_manager.list_sessions()}
+
+
+@router.get("/sessions/{session}/takes/{take}/pose")
+async def take_pose_track(session: str, take: str,
+                          start: float | None = None, end: float | None = None,
+                          points: int = 0) -> dict:
+    """
+    The take's precomputed poses, with how far the computation has got.
+
+    This is what a sweep reads: scrubbing a cursor through a take must move the
+    wheel without anything reaching the bus — no frame, no event, no OSC — so
+    the poses are read straight from the file rather than replayed (ADR 0004).
+
+    Opening a take that has no track yet starts one, which is the second of the
+    track's two producers (the first is the end of a recording).  An incomplete
+    track is served as it stands rather than refused: at 50–77× real time the
+    computation outruns the cursor, so the sweep is alive to the limit reached
+    and `records`/`duration_s` say where that limit is.
+
+    `start`/`end` are take-relative seconds; `points` caps how many poses come
+    back, by stride — the far end of the window is always kept, since that is
+    where the cursor is going.  They are worth using: a pose costs ~150 bytes of
+    JSON, so a whole 15-minute take at 100 Hz is ~13 MB serialised on the event
+    loop, against ~45 KB for the three seconds around a cursor.
+    """
+    sm = core.session_manager
+    if not os.path.exists(sm.csv_path(sm.take_path(session, take))):
+        raise HTTPException(404, f"Take not found: {session}/{take}")
+
+    rec = core.csv_logger
+    if not (rec.active and rec._meta and rec._meta.name == take):
+        # Never compute from a CSV still being appended to: the run would finish
+        # early, stamp itself complete, and that truncated track would never be
+        # recomputed. A take being recorded simply has no track yet.
+        await core.pose_tracks.ensure(session, take)
+
+    return core.pose_tracks.read(session, take, start=start, end=end, points=points)
 
 
 @router.patch("/sessions/{session}/takes/{take}")

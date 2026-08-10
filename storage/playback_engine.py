@@ -60,6 +60,47 @@ PAYLOAD_FIELDS: dict[int, tuple[str, ...]] = {
 SENTINEL = {"typeId": "playback_end"}
 
 
+def row_to_packet(row: dict) -> dict | None:
+    """
+    Reconstruct a packet dict from a CSV row.
+
+    For super-slot rows, all non-empty named fields are loaded; any field
+    absent or blank in the CSV (deps not active when the session was
+    recorded) is simply omitted from the packet.
+    Returns None if type_id is missing or unknown.
+
+    Module-level rather than a method because it is the *only* decoder of the
+    CSV's layout, and the pose-track computation (storage/pose_track.py) reads
+    the same files.  Two decoders would be two chances to disagree about which
+    column a super slot's gyro landed in.
+    """
+    raw = row.get("type_id", "")
+    if not raw:
+        log.debug("CSV row has no type_id — skipped")
+        return None
+
+    type_id = int(raw)
+    if type_id not in PACKET_TYPES:
+        log.debug(f"Unknown type_id 0x{type_id:02X} — row skipped")
+        return None
+
+    packet: dict = {
+        "version":   1,
+        "type":      PACKET_TYPES[type_id],
+        "typeId":    type_id,
+        "seq":       int(row["seq"]),
+        "ts_esp_us": int(row["ts_esp_us"]),
+        "ts_rx_us":  int(row["ts_rx_us"]),
+    }
+
+    for field in PAYLOAD_FIELDS.get(type_id, ()):
+        v = row.get(field, "")
+        if v:
+            packet[field] = float(v)
+
+    return packet
+
+
 class PlaybackEngine:
     """Replays a recorded CSV session as a stream of packets."""
 
@@ -211,7 +252,7 @@ class PlaybackEngine:
                     self.index     = i
                     self.elapsed_s = elapsed_csv_s
 
-                    packet = self._row_to_packet(row)
+                    packet = row_to_packet(row)
                     if packet is not None:
                         await queue.put(packet)
 
@@ -229,38 +270,3 @@ class PlaybackEngine:
             self.paused = False
             self._resume.set()
 
-    @staticmethod
-    def _row_to_packet(row: dict) -> dict | None:
-        """
-        Reconstruct a packet dict from a CSV row.
-
-        For super-slot rows, all non-empty named fields are loaded; any field
-        absent or blank in the CSV (deps not active when the session was
-        recorded) is simply omitted from the packet.
-        Returns None if type_id is missing or unknown.
-        """
-        raw = row.get("type_id", "")
-        if not raw:
-            log.debug("CSV row has no type_id — skipped")
-            return None
-
-        type_id = int(raw)
-        if type_id not in PACKET_TYPES:
-            log.debug(f"Unknown type_id 0x{type_id:02X} — row skipped")
-            return None
-
-        packet: dict = {
-            "version":   1,
-            "type":      PACKET_TYPES[type_id],
-            "typeId":    type_id,
-            "seq":       int(row["seq"]),
-            "ts_esp_us": int(row["ts_esp_us"]),
-            "ts_rx_us":  int(row["ts_rx_us"]),
-        }
-
-        for field in PAYLOAD_FIELDS.get(type_id, ()):
-            v = row.get(field, "")
-            if v:
-                packet[field] = float(v)
-
-        return packet

@@ -36,6 +36,7 @@ from osc.routes                 import RouteTable
 from storage.session_manager    import SessionManager
 from storage.csv_logger         import CSVLogger
 from storage.playback_engine    import PlaybackEngine
+from storage.pose_track         import PoseTrackService
 
 log = logging.getLogger("core")
 
@@ -93,6 +94,12 @@ _MODEL_LOG_EVERY = 200
 session_manager = SessionManager()
 csv_logger      = CSVLogger(session_manager)
 playback_engine = PlaybackEngine(session_manager)
+
+# Precomputed poses beside each take, so a take can be swept without replaying
+# it. Its computations run in worker threads and touch nothing here: they drive
+# their own isolated Model with no bus, which is what keeps a sweep from firing
+# events into Live (see storage/pose_track.py).
+pose_tracks = PoseTrackService(session_manager)
 
 # Observes the packet stream (rates, latest values, liveness) for GET /api/live.
 monitor = LiveMonitor()
@@ -433,6 +440,9 @@ async def shutdown() -> None:
         csv_logger.stop()
     if playback_engine.active:
         playback_engine.stop()
+    # A half-written track is safe to abandon: the completion flag is only
+    # stamped at the end, so the next open recomputes it from row 0.
+    pose_tracks.cancel_all()
 
     for task in _tasks:
         task.cancel()

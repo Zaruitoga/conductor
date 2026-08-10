@@ -16,6 +16,11 @@ Directory structure:
         001_premier-essai/       ← <NNN>_<slug(take title)>
           raw.csv
           take.json              ← TakeMeta
+          pose.bin               ← pose track (storage/pose_track.py)
+
+`raw.csv` is the recording; `pose.bin` is derived from it and can always be
+deleted and recomputed, which is why a take is listed on the presence of the
+CSV alone.
 
 The `takes/` subdir is explicit so session-level assets (video files…) can
 live alongside it later.  The `.active` pointer is what makes the open
@@ -305,6 +310,9 @@ class SessionManager:
 
     def csv_path(self, take_dir: str) -> str:
         return os.path.join(take_dir, "raw.csv")
+
+    def pose_path(self, take_dir: str) -> str:
+        return os.path.join(take_dir, "pose.bin")
 
     # ── Internals ───────────────────────────────────────────────────────────
 

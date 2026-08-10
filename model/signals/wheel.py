@@ -15,9 +15,13 @@ The contact point and the centre velocity are each wanted by several signals and
 cost a matrix product and a cross product, so they are computed once per tick and
 shared through `ctx.scratch` rather than recomputed per signal.
 
-Wheel dimensions are parameters rather than constants: they belong to the object
-you are performing with, and swapping wheels between two takes should not mean
-editing a file and restarting.
+Wheel dimensions are constants, not parameters: they are *measurements* of the
+object you are performing with, not something to be tuned by ear.  They used to
+sit on a slider, and that is exactly what a precomputed pose track cannot live
+with — moving either one mid-séance would silently invalidate every track
+already on disk (storage/pose_track.py stamps them for that reason).  Swapping
+wheels is an edit to config.py and a restart, which is the right price for a
+number the recordings depend on.
 """
 
 import math
@@ -25,19 +29,11 @@ import math
 import numpy as np
 
 import config
-from model.params import PARAMS
 from model.quantities import ATTITUDE_REL, OMEGA
 
-# Physical dimensions of the wheel currently in use. config.py supplies the
-# defaults; these are what the model actually reads.
-P_WHEEL_R = PARAMS.declare(
-    "wheel_R_m", default=config.R_TORE, min=0.3, max=2.5, unit="m",
-    group="roue", doc="Rayon majeur de la roue (axe → centre du tube)",
-)
-P_WHEEL_r = PARAMS.declare(
-    "wheel_r_m", default=config.r_TORE, min=0.005, max=0.2, unit="m",
-    group="roue", doc="Rayon du tube de la roue",
-)
+# Physical dimensions of the wheel currently in use.
+_WHEEL_R = config.R_TORE
+_WHEEL_r = config.r_TORE
 
 # Below this, the wheel is flat enough that "which way is it leaning" and "where
 # does it touch the ground" have no answer, and the formulas divide by ~zero.
@@ -86,8 +82,8 @@ def kinematics(ctx) -> Kinematics | None:
     u_perp = math.hypot(float(u[0]), float(u[1]))
     degenerate = u_perp < _DEGENERATE
 
-    wheel_R = ctx.param(P_WHEEL_R)
-    wheel_r = ctx.param(P_WHEEL_r)
+    wheel_R = _WHEEL_R
+    wheel_r = _WHEEL_r
 
     r_contact = None
     p_dot     = None
