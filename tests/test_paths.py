@@ -1,5 +1,7 @@
 """
-tests/test_paths.py — A name from the outside can never leave sessions/.
+tests/test_paths.py — A name from the outside can never leave the directory it names.
+
+Three roots, one rule: `sessions/`, `params/` and `mappings/`.
 
 `os.path.join` drops every component preceding an absolute one, so
 `take_path("a", "/etc/passwd")` used to *be* `/etc/passwd` — no `..`, no
@@ -11,14 +13,20 @@ Two independent layers are checked here, in the order they run:
 
   1. **shape**, declared on the routes, so a malformed name is a 422 before any
      handler sees it;
-  2. **containment**, inside `session_path()` / `take_path()`, which closes every
-     caller at once — including the ones not written yet.
+  2. **containment**, inside `session_path()` / `take_path()` and the two
+     `profile_path()` builders, which closes every caller at once — including
+     the ones not written yet.
 
 The layer that matters most is the one that must *not* fire: `list_takes()`
 swallows a take whose metadata fails to load, so a validation raising from that
 path would make real takes vanish from the panel instead of showing an error.
 The rule this file pins down is that validation rejects an *input*, never a take
 already on disk.
+
+The profile stores repeat the whole shape one directory over, and the same rule
+holds there with an extra edge: a profile name is never slugified on the way in,
+so what is already on disk is likelier still to be a name a request may no longer
+send.  It keeps listing regardless.
 """
 
 import asyncio
@@ -30,8 +38,10 @@ import tempfile
 
 from fastapi import FastAPI
 
-from api.models import PlaybackRequest, TakeUpdate
+from api.models import PlaybackRequest, ProfileRequest, TakeUpdate
 from api.routes import router
+from model.params import ParamStore
+from osc.routes import RouteTable
 from storage.paths import NAME_PATTERN, UnsafePath, confine, is_name, is_video_filename
 from storage.session_manager import SessionManager, TakeMeta, _slug
 
@@ -365,6 +375,197 @@ def test_the_request_models_reject_before_any_handler_runs():
 
     assert TakeUpdate(video_file="clap.mp4").video_file == "clap.mp4"
     assert PlaybackRequest(session="s", take="001_a").speed == 1.0
+
+
+# ── The same defect one directory over: profiles ────────────────────────────
+#
+# `ProfileRequest.name` reaches `os.path.join` in two stores that share nothing
+# but this shape — `params/` for model parameters, `mappings/` for OSC routes.
+# Both are checked together on purpose: a fix applied to one and forgotten in the
+# other is the likeliest way this comes back.
+
+def _stores(directory: str):
+    """The two profile stores, which must answer identically about a name."""
+    return (ParamStore(directory=directory), RouteTable(directory=directory))
+
+
+def test_a_profile_name_that_is_a_path_is_refused():
+    """
+    The defect, restated for profiles: `save_profile("/tmp/pwned")` *was*
+    `/tmp/pwned.json`.  As with takes, the only thing bounding it was accidental
+    — here the fixed `.json` suffix, which nobody chose as a defence and which
+    stops nothing a `.json` config file would not already be.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        assert os.path.join(tmp, "/tmp/pwned.json") == "/tmp/pwned.json", \
+            "join still drops the root — that is the whole defect"
+
+        for store in _stores(tmp):
+            kind = type(store).__name__
+            for bad in ("/tmp/pwned", "/etc/cron.d/x", "../../etc/x",
+                        "../outside", "a/../../b"):
+                try:
+                    store.profile_path(bad)
+                except UnsafePath:
+                    pass
+                else:
+                    raise AssertionError(f"{kind}.profile_path accepted {bad!r}")
+
+            # …and an ordinary name still resolves where it always did.
+            assert store.profile_path("show1") == \
+                os.path.join(os.path.realpath(tmp), "show1.json")
+
+            # A bare `..` is the one input the two layers judge differently, and
+            # it is worth being explicit about which one does the work.  Because
+            # the suffix is glued on *inside* the confined segment, `..` names
+            # `...json` — a real, contained file — so containment has no reason
+            # to object.  The shape layer is what refuses it (see the route test
+            # below), and this is the one place the two are not interchangeable.
+            for inert in ("..", "."):
+                assert store.profile_path(inert).startswith(os.path.realpath(tmp))
+                assert not is_name(inert), \
+                    f"{inert!r} must be refused by shape, since containment will not"
+
+
+def test_saving_an_escaping_profile_writes_nothing():
+    """
+    Containment has to happen before the write, not merely be reported after it.
+    """
+    with tempfile.TemporaryDirectory() as base:
+        store_dir = os.path.join(base, "store")
+        target    = os.path.join(base, "pwned.json")
+
+        for store in _stores(store_dir):
+            try:
+                store.save_profile(os.path.join(base, "pwned"))
+            except UnsafePath:
+                pass
+            else:
+                raise AssertionError(f"{type(store).__name__} saved outside its dir")
+            assert not os.path.exists(target), "the escaping write happened anyway"
+
+
+def test_a_profile_symlinked_out_of_its_directory_is_refused():
+    """
+    The layer the shape check cannot see: `evil` is a perfectly legal name, and
+    only resolving the link finds it pointing elsewhere.
+    """
+    with tempfile.TemporaryDirectory() as base:
+        store_dir = os.path.join(base, "store")
+        os.makedirs(store_dir)
+        outside = os.path.join(base, "secret.json")
+        with open(outside, "w") as f:
+            json.dump({"stolen": True}, f)
+        os.symlink(outside, os.path.join(store_dir, "evil.json"))
+
+        for store in _stores(store_dir):
+            assert is_name("evil"), "the shape layer has no objection here"
+            try:
+                store.profile_path("evil")
+            except UnsafePath:
+                pass
+            else:
+                raise AssertionError(f"{type(store).__name__} followed a symlink out")
+
+
+def test_a_profile_on_disk_never_disappears_from_the_listing():
+    """
+    The same rule as `list_takes()`, and the same way of getting it wrong.
+
+    Profile names are *not* slugified on the way in — `save_profile("x")` writes
+    `x.json` verbatim — so a profile saved before this shape rule existed can
+    easily be named something a request may no longer send.  It keeps listing:
+    validation rejects an input, never a file already saved.  Routing
+    `list_profiles()` through `profile_path()` is exactly what would break this.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        for filename in ("réglages roue.json", "essai 3.json", "show1.json"):
+            with open(os.path.join(tmp, filename), "w") as f:
+                json.dump({}, f)
+
+        for store in _stores(tmp):
+            assert store.list_profiles() == ["essai 3", "réglages roue", "show1"], \
+                f"{type(store).__name__} hid a profile that exists"
+
+        assert not is_name("réglages roue"), "…and a request may still not name it"
+
+
+def test_the_profile_stores_still_round_trip_a_legal_name():
+    """The fix must not have closed the door on the ordinary case."""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ParamStore(directory=tmp)
+        store.declare("seuil", default=2.5, min=0.0, max=10.0)
+        store.set("seuil", 4.0)
+        store.save_profile("2026-08-10_show")
+
+        reloaded = ParamStore(directory=tmp)
+        reloaded.declare("seuil", default=2.5, min=0.0, max=10.0)
+        reloaded.load_profile("2026-08-10_show")
+        assert reloaded.values()["seuil"] == 4.0
+        assert reloaded.list_profiles() == ["2026-08-10_show"]
+
+
+def test_profile_routes_refuse_a_name_that_is_not_one():
+    """
+    Layer 1 at the boundary: all four endpoints share `ProfileRequest`, so all
+    four are checked — including `save`, where a traversal is a *write*.
+    """
+    app = _app()
+    for path in ("/api/model/params/save", "/api/model/params/load",
+                 "/api/osc/routes/save", "/api/osc/routes/load"):
+        for name in ("/tmp/pwned", "..", "../../etc/x", "a/b", "a\\b", "",
+                     "réglages roue", "a" * 200):
+            status, text = _call(app, "POST", path, {"name": name})
+            assert status == 422, f"POST {path} name={name!r} → {status} {text}"
+
+    # A legal name still reaches the handler: 404, since no such profile exists
+    # here.  Probed on `load` rather than `save` deliberately — `save` would
+    # write into the repo's own params/, and a test must not leave one behind.
+    for path in ("/api/model/params/load", "/api/osc/routes/load"):
+        status, text = _call(app, "POST", path, {"name": "profil-inexistant"})
+        assert status == 404, f"POST {path} → {status} {text}"
+
+
+def test_a_profile_route_answers_400_rather_than_crashing_on_a_symlink():
+    """
+    Layer 2 at the boundary.  `evil` passes the shape check, so this reaches the
+    handler and `confine()` raises inside it — and UnsafePath is a ValueError,
+    which without the catch is a 500.  A containment refusal must be an answer,
+    not a crash.
+    """
+    import core
+
+    app = _app()
+    with tempfile.TemporaryDirectory() as base:
+        store_dir = os.path.join(base, "store")
+        os.makedirs(store_dir)
+        outside = os.path.join(base, "secret.json")
+        with open(outside, "w") as f:
+            json.dump({}, f)
+        os.symlink(outside, os.path.join(store_dir, "evil.json"))
+
+        for store, path in ((core.model.params, "/api/model/params/load"),
+                            (core.osc_routes,   "/api/osc/routes/load")):
+            original = store._dir
+            store._dir = store_dir
+            try:
+                status, text = _call(app, "POST", path, {"name": "evil"})
+                assert status == 400, f"POST {path} → {status} {text}"
+            finally:
+                store._dir = original
+
+
+def test_the_profile_request_model_rejects_before_any_handler_runs():
+    """Asserted on the model itself — the routes are not its only future caller."""
+    for name in ("/tmp/pwned", "..", "a/b", "", "a b"):
+        try:
+            ProfileRequest(name=name)
+        except Exception:
+            pass
+        else:
+            raise AssertionError(f"ProfileRequest accepted {name!r}")
+
+    assert ProfileRequest(name="2026-08-10_show").name == "2026-08-10_show"
 
 
 def main() -> None:

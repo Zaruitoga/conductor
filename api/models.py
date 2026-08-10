@@ -99,8 +99,19 @@ class ParamUpdate(BaseModel):
 
 
 class ProfileRequest(BaseModel):
-    """Save or load a named parameter profile."""
-    name: str
+    """
+    Save or load a named profile — model parameters (`params/`) or OSC mappings
+    (`mappings/`), which share this body and the same defect.
+
+    The name is a `PathSegment` for the reason a session's is: it reaches
+    `os.path.join` and therefore *becomes* the path.  Unlike a session, though,
+    nothing slugifies it first — `save_profile("x")` writes `x.json` verbatim —
+    so this annotation is also the only thing deciding what a profile may be
+    called.  Spaces and accents are out, which is a real narrowing of a free-text
+    field; the containment layer in the two `profile_path()` builders is what
+    makes it defence in depth rather than the whole defence.
+    """
+    name: PathSegment
 
 
 class SignalToggle(BaseModel):
