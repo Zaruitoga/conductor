@@ -385,8 +385,9 @@ Il n'existe aucune primitive native (§ 2.1). Le geste correct est :
 L'étape 5 est ce qui transforme un pari en mesure. En pratique, en CFR, l'étape 6 ne se déclenche
 quasiment jamais ; elle existe pour les cas de § 3.4 et § 5.
 
-**Conséquence de conception pour la carte** : ce qu'il faut stocker dans `video_sync_time_s`, c'est
-le `mediaTime` de la frame retenue — le PTS lu dans le média — et **jamais** un `n / fps` recalculé.
+**Conséquence de conception pour la carte** : ce qu'il faut stocker dans l'ancre vidéo
+(`onset_video_s`), c'est le `mediaTime` de la frame retenue — le PTS lu dans le média — et **jamais**
+un `n / fps` recalculé.
 Le PTS est ce que le fichier dit ; `n / fps` est ce qu'on croit que le fichier dit.
 
 ### 4.2 Viser le milieu, jamais la frontière

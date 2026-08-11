@@ -75,7 +75,6 @@ function updateRow(row, ctx) {
     t.title && t.title !== t.name && t.title,
     t.performer && `perf : ${t.performer}`,
     t.figures && t.figures.length && `figures : ${t.figures.join(", ")}`,
-    t.sync_marker_ts_us > 0 && "marqueur ✓",
     t.notes && "notes ✓",
   ].filter(Boolean).join(" · ");
 

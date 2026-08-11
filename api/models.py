@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from pydantic import BaseModel, StringConstraints, field_validator
+from pydantic import BaseModel, StringConstraints, field_validator, model_validator
 
 from storage.paths import MAX_NAME_LEN, NAME_PATTERN, VIDEO_EXTENSIONS, is_video_filename
 
@@ -67,7 +67,26 @@ class TakeUpdate(BaseModel):
     figures: list[str] | None = None
     notes: str | None = None
     video_file: str | None = None
-    video_sync_time_s: float | None = None
+    onset_imu_s: float | None = None
+    onset_video_s: float | None = None
+
+    @model_validator(mode="after")
+    def _alignment_is_indivisible(self) -> "TakeUpdate":
+        """
+        The two anchors are posted together or not at all.
+
+        Half an alignment locates nothing: the offset it exists to give is the
+        distance between the two, and one of them alone is just a number.
+        Refusing it here is what keeps "not yet aligned" a state with no field
+        of its own — either both anchors are on the take, or neither is.  A
+        patch that says nothing about the alignment is untouched by the rule.
+        """
+        if (self.onset_imu_s is None) != (self.onset_video_s is None):
+            raise ValueError(
+                "onset_imu_s et onset_video_s se posent ensemble : "
+                "un alignement est indivisible"
+            )
+        return self
 
     @field_validator("video_file")
     @classmethod
