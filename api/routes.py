@@ -21,6 +21,7 @@ from api.models import (
     OscRouteCreate, OscRouteUpdate, OscSettings, OscLiveRefresh,
 )
 from osc import targets as osc_targets
+from storage.onset import onset_report
 from storage.paths import UnsafePath
 
 router = APIRouter(prefix="/api")
@@ -405,6 +406,40 @@ def _is_being_recorded(session: str, take: str) -> bool:
         return False
     active = core.session_manager.active_session()
     return active is not None and active.name == session
+
+
+@router.get("/sessions/{session}/takes/{take}/onset")
+async def take_onset(session: PathSegment, take: PathSegment) -> dict:
+    """
+    Where this take's movement starts, proposed — with the curve to judge it by.
+
+    Both come back in one round trip because the alignment page always wants
+    both: an instant with no curve beside it cannot be checked, and the curve is
+    what makes the proposition readable (`silence_s` here, first movement
+    there).  See storage/onset.py for the rule and the two constants it rests
+    on; it only ever proposes, and nothing is stored (ADR 0001).
+
+    The curve goes out **unreduced** (ADR 0002) — the opposite of
+    `GET /api/model/history`, deliberately.  A take is a frozen file read once,
+    not a live ring: at ~14 bytes a sample that is 40 KB for a minute, and the
+    browser reducing to min/max envelopes itself makes zooming free instead of
+    one round trip per level.  Zooming *is* the activity here.
+
+    Unlike the pose track, a take still being recorded is not refused: nothing
+    is cached, so reading a growing CSV simply proposes from the part written so
+    far, and the next call sees the rest.
+    """
+    sm = core.session_manager
+    try:
+        csv_path = sm.csv_path(sm.take_path(session, take))
+    except UnsafePath as e:
+        raise HTTPException(400, str(e))
+    if not os.path.exists(csv_path):
+        raise HTTPException(404, f"Take not found: {session}/{take}")
+
+    # In a worker thread: a 15-minute take is ~90 000 rows through the CSV
+    # decoder, and this loop is the one owning processing_loop.
+    return await asyncio.to_thread(onset_report, csv_path)
 
 
 @router.patch("/sessions/{session}/takes/{take}")
