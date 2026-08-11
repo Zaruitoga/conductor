@@ -74,7 +74,6 @@ function updateTakeMeta() {
     t.performer && `perf : ${t.performer}`,
     t.figures && t.figures.length && `figures : ${t.figures.join(", ")}`,
     `${takeDuration(t)} s · ${fmtCount(t.packet_count)} paquets`,
-    t.sync_marker_ts_us > 0 && "marqueur ✓",
   ].filter(Boolean).join(" · "));
 }
 

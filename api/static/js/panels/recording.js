@@ -2,7 +2,7 @@
 // A take requires an open session (routes return 409 otherwise), so the
 // controls follow the session state.
 
-import { $, h, setText, setClass, setHidden, setDisabled, fmtCount } from "../dom.js";
+import { $, h, setText, setClass, setHidden, fmtCount } from "../dom.js";
 import { on, state } from "../store.js";
 import { api, action } from "../api.js";
 import { refreshSessions } from "./playback.js";
@@ -29,7 +29,6 @@ export function initRecording() {
 
     setText($("rec-take"), r.take || "—");
     setText($("rec-count"), fmtCount(r.packet_count));
-    setDisabled($("rec-marker"), !r.active);
 
     if (r.active !== lastActive) {
       lastActive = r.active;
@@ -58,13 +57,7 @@ export function initRecording() {
       notes: $("take-notes").value,
     });
   });
-
-  $("rec-marker").onclick = action(
-    () => api("POST", "/api/recording/marker"), "Marqueur posé");
 }
 
 /** Used by the keyboard shortcuts. */
 export const toggleRecording = () => $("rec-toggle").click();
-export const putMarker = () => {
-  if (!$("rec-marker").disabled) $("rec-marker").click();
-};

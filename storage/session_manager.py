@@ -34,7 +34,7 @@ import re
 import subprocess
 import unicodedata
 from datetime import datetime
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, fields, asdict
 
 from storage.paths import UnsafePath, confine, is_video_filename
 
@@ -47,7 +47,7 @@ ACTIVE_FILE  = ".active"
 SESSION_EDITABLE = ("title", "location", "equipment", "comments", "firmware_version")
 # Take fields editable after the fact (PATCH .../takes/{take})
 TAKE_EDITABLE = ("title", "performer", "figures", "notes",
-                 "video_file", "video_sync_time_s")
+                 "video_file", "onset_imu_s", "onset_video_s")
 
 _program_version_cache: str | None = None
 
@@ -105,10 +105,14 @@ class TakeMeta:
     packet_count:      int = 0
     imu_config:        dict | None = None  # configurator.state at take start
 
-    # Video synchronisation
+    # Video alignment: the pair of anchors locating this take's start of
+    # movement in its video — both of them, never their difference (ADR 0001).
+    # Seconds: take-relative for the IMU one, i.e. the timeline of `frame.t`,
+    # and video-relative for the other.  Indivisible, both or neither, which is
+    # why "not yet aligned" needs no field of its own.
     video_file:        str = ""
-    sync_marker_ts_us: int = 0        # ts_rx_us at the clap moment
-    video_sync_time_s: float = 0.0    # position in the video at that moment
+    onset_imu_s:       float | None = None
+    onset_video_s:     float | None = None
 
     extra:             dict = field(default_factory=dict)
 
@@ -263,11 +267,6 @@ class SessionManager:
         self._write_take_meta(take_dir, meta)
         return meta
 
-    def set_sync_marker(self, take_dir: str, meta: TakeMeta, ts_rx_us: int) -> None:
-        """Record the ts_rx_us of the video sync clap."""
-        meta.sync_marker_ts_us = ts_rx_us
-        self._write_take_meta(take_dir, meta)
-
     # ── Listing / loading ───────────────────────────────────────────────────
 
     def list_sessions(self) -> list[dict]:
@@ -341,8 +340,31 @@ class SessionManager:
             return SessionMeta(**json.load(f))
 
     def load_take(self, take_dir: str) -> TakeMeta:
+        """
+        Read one take's metadata, tolerant of unknown *and* missing keys.
+
+        A take.json is written by whichever version recorded it and read by
+        whichever one is running now: a field added since is missing from it, a
+        field removed since is still in it.  `TakeMeta(**raw)` raises TypeError
+        on the second — and `list_takes()` swallows that, so a schema change
+        would make every take recorded before it *disappear from the panel*
+        rather than report anything.  Filtering on the declared fields is what
+        makes retiring a field cost nothing on disk.
+
+        `name` is filled from the directory when absent, because that is where a
+        take's name actually lives; take.json only echoes it, and defaulting it
+        to "" would list a nameless take instead of the one that is there.  The
+        dict check keeps a corrupt take.json a TypeError, the one exception
+        `list_takes()` is written to skip — on a JSON array, filtering keys
+        would raise AttributeError and take the whole listing down with it.
+        """
         with open(os.path.join(take_dir, "take.json")) as f:
-            return TakeMeta(**json.load(f))
+            raw = json.load(f)
+        if not isinstance(raw, dict):
+            raise TypeError(f"take.json is not an object: {take_dir}")
+        raw.setdefault("name", os.path.basename(os.path.normpath(take_dir)))
+        known = {f.name for f in fields(TakeMeta)}
+        return TakeMeta(**{k: v for k, v in raw.items() if k in known})
 
     # ── Paths ───────────────────────────────────────────────────────────────
     # Every path built from a name goes through storage/paths.py:confine(), which

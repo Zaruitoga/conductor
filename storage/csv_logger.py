@@ -148,11 +148,3 @@ class CSVLogger:
         if m.first_ts_rx_us == 0:
             m.first_ts_rx_us = packet["ts_rx_us"]
         m.last_ts_rx_us = packet["ts_rx_us"]
-
-    def mark_sync(self, ts_rx_us: int) -> None:
-        """Record a video sync marker (clap) timestamp in the take sidecar."""
-        if not self.active:
-            log.warning("Sync marker ignored: no active recording")
-            return
-        self._sm.set_sync_marker(self._take_dir, self._meta, ts_rx_us)
-        log.info(f"Sync marker recorded at ts_rx_us={ts_rx_us}")

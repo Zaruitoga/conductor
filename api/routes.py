@@ -8,7 +8,6 @@ the old keyboard interface's run_in_executor).
 
 import asyncio
 import os
-import time
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
@@ -330,15 +329,6 @@ async def recording_stop() -> dict:
             # the answer to this request — the track is a separate concern.
             pass
     return {"active": False, "pose_track": track}
-
-
-@router.post("/recording/marker")
-async def recording_marker() -> dict:
-    if not core.csv_logger.active:
-        raise HTTPException(409, "No active recording")
-    ts = time.time_ns() // 1000
-    core.csv_logger.mark_sync(ts)
-    return {"sync_marker_ts_us": ts}
 
 
 @router.get("/recording/status")

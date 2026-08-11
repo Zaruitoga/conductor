@@ -6,7 +6,7 @@
 // starts a recording while you are looking at the OSC routes.
 
 import { $ } from "./dom.js";
-import { toggleRecording, putMarker } from "./panels/recording.js";
+import { toggleRecording } from "./panels/recording.js";
 import { togglePlayback, stopPlayback, toggleLoop } from "./panels/playback.js";
 import { closeAllEditors } from "./panels/takes.js";
 import { showTab, TABS } from "./tabs.js";
@@ -46,8 +46,6 @@ export function initShortcuts() {
     switch (e.key) {
       case "r": case "R":
         e.preventDefault(); toggleRecording(); break;
-      case "m": case "M":
-        e.preventDefault(); putMarker(); break;
       case "s": case "S":
         e.preventDefault(); stopPlayback(); break;
       case "l": case "L":

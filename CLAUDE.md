@@ -34,9 +34,11 @@ The suite is fast (~2 s) and covers the properties that are expensive to discove
 
 **`test_paths.py` drives the routes through a raw ASGI scope rather than `TestClient`** — an HTTP client normalises `..` away before sending, so a `TestClient` test of the path-traversal fix would be testing httpx, not the router. It is also the one test module that asserts something must *not* happen: a take already on disk keeps listing whatever a request would have been refused for (see `storage/paths.py`).
 
+**`test_take_meta.py` holds a `take.json` written by the previous version, verbatim** (`LEGACY_TAKE_JSON`, with the retired sync-marker fields). It is what makes the tolerance rule above testable at all: rewriting that fixture with the current `TakeMeta` would assert nothing, since the failure it guards against is precisely a file the current schema did not write. It borrows `test_paths.py`'s `_app`/`_call` for the round trip through `PATCH`, and reads the take back through a *second* `SessionManager` — a restart, at the only level that matters here.
+
 ### Control interface (REST API + web panel)
 
-Control (ESP config, sessions, recording, playback) is exposed as a REST API under `/api/...` (see `api/routes.py`) and a vanilla HTML/JS panel served from `api/static/`. This replaced the old stdin keyboard interface. **Commands** are REST: ESP control (`POST /api/esp/host|simple|super`, `DELETE /api/esp/super/{slot}`), session lifecycle (`POST /api/session/start|close`, `PATCH /api/session`), take recording (`POST /api/recording/start|stop|marker`), take editing (`PATCH /api/sessions/{session}/takes/{take}`), playback (`GET /api/sessions`, `POST /api/playback/start|stop` with `{session, take, speed, loop}`). A take's precomputed poses are read with `GET /api/sessions/{session}/takes/{take}/pose` (see "The pose track").
+Control (ESP config, sessions, recording, playback) is exposed as a REST API under `/api/...` (see `api/routes.py`) and a vanilla HTML/JS panel served from `api/static/`. This replaced the old stdin keyboard interface. **Commands** are REST: ESP control (`POST /api/esp/host|simple|super`, `DELETE /api/esp/super/{slot}`), session lifecycle (`POST /api/session/start|close`, `PATCH /api/session`), take recording (`POST /api/recording/start|stop`), take editing (`PATCH /api/sessions/{session}/takes/{take}`), playback (`GET /api/sessions`, `POST /api/playback/start|stop` with `{session, take, speed, loop}`). A take's precomputed poses are read with `GET /api/sessions/{session}/takes/{take}/pose` (see "The pose track").
 
 **Observation is hybrid push/poll** (see `core.panel_snapshot`). The panel's primary channel is a **native FastAPI WebSocket at `/api/ws`** (`panel_ws` in `routes.py`, one push loop per client at ~4 Hz) that sends a merged snapshot: `{status, live, health, session, recording, playback, esp, model}`. The same per-section dicts are also exposed as REST GETs (`/api/status`, `/api/live`, `/api/health`, `/api/session`, `/api/recording/status`, `/api/playback/status`, `/api/model`) which the frontend uses only as a **fallback** when the socket drops (`js/store.js` `startFallback`). All snapshot builders live in `core.py` (`status_dict`/`session_dict`/`recording_dict`/`playback_dict`/`model_dict`/`panel_snapshot`) — single source of truth. Stream observation (per-type rates, liveness, latest values) is done backend-side by `LiveMonitor` (`transport/live_monitor.py`), fed from `processing_loop`. `LiveMonitor` watches **the wire and only the wire**; anything derived belongs to the model, which keeps its own state.
 
@@ -106,7 +108,7 @@ The panel serves three jobs that never happen at once — rigging, capture, crea
 
 Breakpoints at 1240 px and 900 px. Because `grid-template-areas` implies a column count, **both the with- and without-transport variants are restated at every breakpoint**; changing only `grid-template-columns` would disagree with the areas.
 
-Keyboard shortcuts (`js/shortcuts.js`, suppressed while typing): `1`–`5` tabs, `R` rec, `M` marker, `Space` play/pause, `S` stop, `L` loop, `?` help.
+Keyboard shortcuts (`js/shortcuts.js`, suppressed while typing): `1`–`5` tabs, `R` rec, `Space` play/pause, `S` stop, `L` loop, `?` help.
 
 The playback progress bar is **read-only by design** — `PlaybackEngine` has no seek. Pause/resume state is always read back from `playback.paused`, never applied optimistically.
 
@@ -278,11 +280,19 @@ sessions/
         raw.csv
         take.json              ← TakeMeta: title, performer, figures, notes, timestamps,
                                  packet_count, imu_config (auto snapshot of configurator.state
-                                 at take start), video sync fields
+                                 at take start), video_file + the alignment anchors
         pose.bin               ← pose track (storage/pose_track.py), derived from raw.csv
 ```
 
 A session is opened (`create_session`) before recording; takes require an open session (`new_take` raises otherwise → routes return 409). The `.active` pointer makes the open session **survive an orchestrator restart** — `active_session()` just re-reads it. `SessionManager.active_tree()` caches the active session+takes dict for the 4 Hz snapshot push (invalidated on every meta write). `list_sessions()` returns the full tree (sessions with nested take metadata); a take only appears once its `raw.csv` exists — `pose.bin` is derived and can always be deleted and recomputed. The firmware version is manual until the ESP ACK protocol exposes it.
+
+#### The alignment (`onset_imu_s` / `onset_video_s`, ADR 0001)
+
+A take's **alignment** is the pair of anchors locating its *start of movement* (wheel flat on the ground, then lifted sharply) in its video: `onset_imu_s` on the take's own timeline — floating seconds from its first sample, which is exactly `frame.t` — and `onset_video_s` in the video. **Both are stored, never their difference**: the offset is a residue either side recomputes, while the anchors are facts, and the video one is the single number in the device no machine can reproduce. Both are set through the existing `PATCH /api/sessions/{session}/takes/{take}`, and **an alignment is indivisible** — `TakeUpdate` refuses a body carrying one anchor without the other, which is what keeps "not yet aligned" a state needing no field of its own (no boolean, no confirmation timestamp).
+
+The automatic **proposition** is stored nowhere: a number nobody can date (computed with which threshold, before or after the last change?) would acquire a durability that contradicts its definition, so it is recomputed on demand. The assumed consequence is that the takes list can show no "detectable" badge — it is served at 4 Hz from `active_tree()`, which recomputes nothing.
+
+**`load_take` filters on `TakeMeta`'s declared fields**, so a `take.json` survives both a key it has never heard of and a key it is missing (`name` falls back to the directory, which is where a take's name actually lives). This is not politeness: `TakeMeta(**raw)` raises `TypeError` on a retired field, `list_takes()` swallows that — and the take **vanishes from the panel** instead of failing. It is the condition for ever removing a field, and it is what let the sync-marker device (`sync_marker_ts_us`, `video_sync_time_s`, `POST /api/recording/marker`, the `M` shortcut, the "marqueur ✓" badge) be deleted whole without evaporating the takes already on disk. A `take.json` that is not an object still raises `TypeError`, deliberately — that is the exception `list_takes()` is written to skip, and filtering keys on a JSON array would raise `AttributeError` and take the whole listing with it.
 
 #### The pose track (`storage/pose_track.py`)
 
