@@ -405,6 +405,60 @@ def test_reading_a_track_still_filling_gives_poses_and_progress_together():
         take.close()
 
 
+def test_a_finished_track_reads_ready_even_while_its_task_is_still_registered():
+    """
+    The window that makes "computing and complete" possible, held open.
+
+    `PoseTrackWriter.close` stamps the completion flag from inside the worker
+    thread, and `_compute`'s `finally` unregisters the task only once
+    `asyncio.to_thread` has returned to the loop — so a track can be finished
+    on disk while its task is still there. Deciding "computing" from the
+    registry alone puts `status: computing` next to `complete: True` in one
+    reply, which is the disagreement `read` exists to prevent, one field over.
+
+    Reproducing that by racing the real computation is what made the
+    end-to-end test above flaky under load; the state it lands in is
+    reconstructed here instead, the way test_osc.py drives `_cadence_step`
+    rather than timing a sleep.
+    """
+    take = _Take(_packets(seconds=1.0))
+
+    async def scenario():
+        svc = PoseTrackService(take.sm)
+        key = (take.session, take.take)
+
+        await svc.ensure(*key)
+        # Waited out on the registry, not on the status: the status is now the
+        # thing under test, and it goes "ready" *inside* the window — while the
+        # real task is still there to pop the stand-in installed below.
+        while key in svc._tasks:
+            await asyncio.sleep(0.01)
+
+        pending = asyncio.ensure_future(asyncio.sleep(60))
+        svc._tasks[key] = pending
+        try:
+            body = await svc.read(*key)
+            assert body["complete"] is True
+            assert body["status"] == "ready", \
+                "a finished track reported itself as still filling"
+            assert body["count"] == body["records"] == 100
+
+            # And nothing starts a second run over it: `ensure` was already
+            # weighing the header, which is why it is the side that was right.
+            again = await svc.ensure(*key)
+            assert again["status"] == "ready"
+            assert svc._tasks[key] is pending, "a second producer was started"
+        finally:
+            svc._tasks.pop(key, None)
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        take.close()
+
+
 def test_deleting_a_broken_track_lets_the_next_open_recompute_it():
     """
     A file that is not a pose track is remembered so it is not overwritten — it
