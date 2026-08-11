@@ -340,6 +340,26 @@ def test_patch_take_refuses_an_unencoded_dot_dot_in_the_url():
     assert status == 404, "a legal pair must still reach the handler"
 
 
+def test_pose_track_refuses_an_unencoded_dot_dot_in_the_url():
+    """
+    The same two positions as the PATCH route, on the other endpoint taking a
+    session/take pair.  Containment always held here — `take_path()` calls
+    `confine()` whatever the handler declares — so what this pins is the
+    *answer*: a name that is a path must be refused the way its siblings refuse
+    it, not raise UnsafePath out of the handler as a 500 with a traceback.
+    """
+    app = _app()
+    status, text = _call(app, "GET", "/api/sessions/a/takes/../pose")
+    assert status == 422, f"GET …/takes/../pose → {status} {text}"
+
+    status, text = _call(app, "GET", "/api/sessions/../takes/001_a/pose")
+    assert status == 422, f"GET …/sessions/../… → {status} {text}"
+
+    status, _ = _call(app, "GET",
+                      "/api/sessions/2026-06-13_14-30_x/takes/001_a/pose")
+    assert status == 404, "a legal pair must still reach the handler"
+
+
 def test_patch_take_refuses_a_video_file_that_is_a_path():
     app = _app()
     url = "/api/sessions/2026-06-13_14-30_x/takes/001_a"

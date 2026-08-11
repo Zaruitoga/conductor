@@ -356,7 +356,7 @@ async def list_sessions() -> dict:
 
 
 @router.get("/sessions/{session}/takes/{take}/pose")
-async def take_pose_track(session: str, take: str,
+async def take_pose_track(session: PathSegment, take: PathSegment,
                           start: float | None = None, end: float | None = None,
                           points: int = 0) -> dict:
     """
@@ -377,9 +377,19 @@ async def take_pose_track(session: str, take: str,
     where the cursor is going.  They are worth using: a pose costs ~150 bytes of
     JSON, so a whole 15-minute take at 100 Hz is ~13 MB serialised on the event
     loop, against ~45 KB for the three seconds around a cursor.
+
+    Both names carry the same two layers as the routes below — `PathSegment` for
+    the shape (a 422 before this body runs) and the UnsafePath catch for the
+    containment `take_path()` applies.  Containment never depended on this route
+    having them; what did was the answer, which was a 500 and a traceback where
+    every sibling taking the same pair says 422 or 400.
     """
     sm = core.session_manager
-    if not os.path.exists(sm.csv_path(sm.take_path(session, take))):
+    try:
+        csv_path = sm.csv_path(sm.take_path(session, take))
+    except UnsafePath as e:
+        raise HTTPException(400, str(e))
+    if not os.path.exists(csv_path):
         raise HTTPException(404, f"Take not found: {session}/{take}")
 
     if not _is_being_recorded(session, take):
