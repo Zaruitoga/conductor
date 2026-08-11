@@ -410,15 +410,27 @@ class PoseTrackService:
 
     def _describe(self, key: tuple[str, str], path: str,
                   header: TrackHeader | None) -> dict:
-        error = self._failed.get(key) or self._unreadable.get(key)
+        error    = self._failed.get(key) or self._unreadable.get(key)
+        complete = header is not None and header.complete
 
-        if key in self._tasks:
+        # A finished file outranks the task registry, and has to. The worker
+        # thread stamps FLAG_COMPLETE from inside `PoseTrackWriter.close`, and
+        # only once `asyncio.to_thread` returns does `_compute`'s `finally` get
+        # to run back on the loop and unregister the task — so between the two
+        # there is a real window in which the track is done and the task is
+        # still registered. Reading "computing" off the registry alone reports
+        # that track as still filling, in a reply carrying `complete: True`
+        # beside it: the two halves of one look at the file, disagreeing, which
+        # is the confusion `read` exists to prevent. The file is the fact; the
+        # registration lags it. `ensure` already weighs the pair this way — it
+        # starts nothing over a complete header, task or no task.
+        if key in self._tasks and not complete:
             state = "computing"
         elif error is not None:
             state = "failed"
         elif header is None:
             state = "absent"
-        elif header.complete:
+        elif complete:
             state = "ready"
         else:
             # On disk, not complete, nobody computing it: a run that died.
@@ -428,7 +440,7 @@ class PoseTrackService:
         out = {
             "status":     state,
             "records":    header.records if header else 0,
-            "complete":   bool(header and header.complete),
+            "complete":   complete,
             "duration_s": self._duration(path, header),
             "error":      error,
             "geometry":   None,
