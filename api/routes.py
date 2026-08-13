@@ -18,7 +18,7 @@ import core
 from api.models import (
     HostConfig, PathSegment, SimpleSlotConfig, SuperSlotConfig,
     SessionCreate, SessionUpdate, TakeStart, TakeUpdate, PlaybackRequest,
-    ParamUpdate, ProfileRequest, SignalToggle,
+    SeekRequest, ParamUpdate, ProfileRequest, SignalToggle,
     OscRouteCreate, OscRouteUpdate, OscSettings, OscLiveRefresh,
 )
 from osc import targets as osc_targets
@@ -546,7 +546,8 @@ async def playback_start(req: PlaybackRequest) -> dict:
     if not os.path.exists(csv_path):
         raise HTTPException(404, f"Take not found: {req.session}/{req.take}")
     await core.playback_engine.start(
-        req.session, req.take, core.queue, core.model.reset, req.speed, req.loop
+        req.session, req.take, core.queue, core.reset_model, req.speed, req.loop,
+        on_seek=core.seek_model,
     )
     return {"active": True, "session": req.session, "take": req.take,
             "speed": req.speed, "loop": req.loop}
@@ -574,6 +575,29 @@ async def playback_resume() -> dict:
         raise HTTPException(409, "No active playback")
     core.playback_engine.resume()
     return {"active": True, "paused": False}
+
+
+@router.post("/playback/seek")
+async def playback_seek(req: SeekRequest) -> dict:
+    """
+    Resume the running replay at a chosen instant of the take.
+
+    Answers as soon as the target is accepted, without waiting for the model's
+    warm-up: dragging a cursor produces a stream of these, and only the last one
+    is worth warming up for (`PlaybackEngine.seek` keeps one slot, not a queue).
+    What the jump then did — window, rows re-fed, whether the position could be
+    seeded from the pose track — rides in the snapshot's `playback.seek`.
+
+    A running replay is required, like pause and resume: this moves a cursor
+    through a take already loaded, it does not load one.  Sweeping a take
+    nobody is playing is the pose track's job, and reaches no model at all
+    (ADR 0004).
+    """
+    if not core.playback_engine.active:
+        raise HTTPException(409, "No active playback")
+    target = core.playback_engine.seek(req.t)
+    return {"active": True, "target_s": target,
+            "paused": core.playback_engine.paused}
 
 
 @router.get("/playback/status")

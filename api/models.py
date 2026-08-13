@@ -112,6 +112,18 @@ class PlaybackRequest(BaseModel):
     loop: bool = False
 
 
+class SeekRequest(BaseModel):
+    """
+    Where in the current take the replay should resume, in take seconds.
+
+    Deliberately unbounded here: what the take's own length allows is a fact
+    about the file being replayed, not about the request, and the engine bounds
+    it at both ends (`PlaybackEngine.clamp_time`).  Refusing a drag that ran
+    past the end of the bar would be a worse answer than playing the end.
+    """
+    t: float
+
+
 class ParamUpdate(BaseModel):
     """Set one or more model parameters. Values are clamped to their bounds."""
     values: dict[str, float]

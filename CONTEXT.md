@@ -72,7 +72,9 @@ d'aucun paramètre réglable et que la position ne s'oublie jamais.
 _Éviter_ : cache, sidecar, index.
 
 **Amorçage** :
-Réinjecter la position lue dans la piste de pose au début d'une mise en régime. Sans lui, la
-roue se téléporte au moment où la lecture reprend, la position horizontale étant la seule
-grandeur qu'un oubli exponentiel ne rend pas.
+Réinjecter la position lue dans la piste de pose **à la fin** d'une mise en régime, à
+l'instant que celle-ci a réellement atteint. Sans lui, la roue se téléporte au moment où la
+lecture reprend, la position horizontale étant la seule grandeur qu'un oubli exponentiel ne
+rend pas. Avant la mise en régime, la réinjection serait effacée : le modèle intégrerait en
+s'éloignant du point posé au lieu d'y arriver.
 _Éviter_ : seed, initialisation.

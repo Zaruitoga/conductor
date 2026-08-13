@@ -34,7 +34,7 @@ from simulator.motion import WheelMotion
 from storage.csv_logger import CSVLogger
 from storage.pose_track import (
     COLUMNS, HEADER_STRUCT, RECORD_STRUCT, PoseTrackService, PoseTrackWriter,
-    compute_pose_track, read_header, read_poses,
+    compute_pose_track, read_header, read_pose_at, read_poses,
 )
 from storage.session_manager import SessionManager
 
@@ -122,6 +122,33 @@ def test_a_written_track_reads_back_the_same_poses():
     assert poses["t"] == [r[0] for r in written], "the timeline must be exact"
     for i, name in enumerate(("qw", "qx", "qy", "qz", "x", "y", "z"), start=1):
         assert poses[name] == [_f32(r[i]) for r in written], f"{name} did not survive"
+
+
+def test_one_pose_is_found_without_reading_the_track():
+    """
+    A seek plants its position from a single record (storage/seek.py), and
+    bisects the file to find it rather than loading the whole array — a jump's
+    cost must not grow with the take's length.  So it has to agree, record for
+    record, with the reading that does load everything.
+    """
+    path = _tmp_track()
+    with PoseTrackWriter(path, config.R_TORE, config.r_TORE) as w:
+        for i in range(250):
+            w.append(i / 100.0, 1.0, 0.0, 0.0, 0.0, float(i), -float(i), 1.05)
+
+    every = read_poses(path)
+    for t in (0.0, 0.004, 0.01, 1.234, 2.49, 99.0):
+        found = read_pose_at(path, t)
+        # The last record at or before t — never the nearest, which would hand
+        # back a position the wheel had not reached yet.
+        expected = max(i for i, v in enumerate(every["t"]) if v <= t)
+        assert found["t"] == every["t"][expected]
+        assert found["x"] == every["x"][expected]
+
+    # Before the first record there is nothing to plant, and saying so is the
+    # difference between "no position here" and a position of zero.
+    assert read_pose_at(path, -1.0) is None
+    assert read_pose_at(_tmp_track(), 1.0) is None, "an absent track must not raise"
 
 
 def test_a_missing_component_stays_a_hole():

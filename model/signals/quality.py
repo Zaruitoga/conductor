@@ -24,6 +24,7 @@ from model.registry import QUALITY, signal
 
 P_RATE_TAU = PARAMS.declare(
     "mag_rate_tau_s", default=0.2, min=0.01, max=2.0, unit="s", group="magnétique",
+    tau=True,
     doc="Lissage de la divergence magnétique avant de la comparer au seuil. "
         "Trop court, le bruit de quantification du capteur déclenche seul.",
 )
@@ -36,7 +37,7 @@ P_DIVERGENCE_MAX = PARAMS.declare(
 )
 P_RELEASE = PARAMS.declare(
     "mag_trust_release_s", default=3.0, min=0.1, max=60.0, unit="s",
-    group="magnétique",
+    group="magnétique", tau=True,
     doc="Temps de retour à la confiance après une perturbation. La chute est "
         "immédiate, la remontée lente : mieux vaut geler l'azimut trop "
         "longtemps que le rouvrir sur un cap encore faux.",

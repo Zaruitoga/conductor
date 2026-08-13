@@ -53,6 +53,12 @@ class ParamSpec:
     step:    float = 0.0     # 0 ⇒ let the UI pick from the range
     group:   str = ""        # which signal or detector it belongs to
     doc:     str = ""
+    # True when this number is the τ of a `ctx.alpha(tau)` envelope, i.e. how
+    # long the signal reading it remembers. Declared rather than guessed from
+    # the name: it is what the seek warm-up window is derived from (see
+    # ParamStore.max_tau_s), and a τ that failed a naming convention would
+    # shorten that window silently.
+    tau:     bool = False
 
     def clamp(self, value: float) -> float:
         return max(self.min, min(self.max, float(value)))
@@ -77,14 +83,17 @@ class ParamStore:
 
     def declare(self, name: str, *, default: float, min: float, max: float,
                 unit: str = "", step: float = 0.0, group: str = "",
-                doc: str = "") -> str:
+                doc: str = "", tau: bool = False) -> str:
         """
         Register one tunable number. Returns its name, so a module can write
         `THRESHOLD = PARAMS.declare(...)` and use the constant afterwards.
+
+        Pass `tau=True` when the number is the time constant of a
+        `ctx.alpha(tau)` envelope — see `max_tau_s`.
         """
         if name in self._specs:
             raise ValueError(f"Parameter {name!r} is declared twice")
-        spec = ParamSpec(name, default, min, max, unit, step, group, doc)
+        spec = ParamSpec(name, default, min, max, unit, step, group, doc, tau)
         self._specs[name]  = spec
         self._values[name] = spec.clamp(default)
         return name
@@ -102,6 +111,20 @@ class ParamStore:
 
     def values(self) -> dict[str, float]:
         return dict(self._values)
+
+    def max_tau_s(self) -> float:
+        """
+        The longest memory anything declared here has, right now.
+
+        The seek warm-up asks this: re-feeding the model for ~5 τ is what makes
+        a jump cost the same whatever the take's length, and τ is *declared*
+        rather than guessed, so raising a time constant widens the window by
+        itself instead of quietly leaving a signal short of convergence.
+        Current values, not defaults — the window has to follow the profile in
+        force, which is the whole reason these numbers are not in config.py.
+        """
+        return max((self._values[n] for n, s in self._specs.items() if s.tau),
+                   default=0.0)
 
     # ── Writing ──────────────────────────────────────────────────────────────
 
