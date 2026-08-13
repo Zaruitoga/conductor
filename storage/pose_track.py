@@ -282,20 +282,47 @@ def read_pose_at(path: str, t_s: float, *,
     integrator with (storage/seek.py) — the one piece of state exponential
     forgetting never gives back.
 
+    **One record is read, found by bisecting the file**, rather than the whole
+    array `read_poses` builds: records are fixed-size and `t` is monotonic, so
+    this is ~17 eight-byte reads for a 15-minute take instead of 3 MB.  A jump's
+    cost must not grow with the take's length — that is the property the whole
+    warm-up exists for (ADR 0004), and it would be odd to give it back here.
+
     NaN comes back as None here too, so "no horizontal position at all" — a
     wheel recorded without a gyro — stays distinct from a position of zero.
     """
-    arr = read_array(path, header)
-    if arr.size == 0:
+    if header is None:
+        header = read_header(path)
+    if header is None or header.records == 0:
         return None
 
-    i = int(np.searchsorted(arr["t"], t_s, side="right")) - 1
-    if i < 0:
+    with open(path, "rb") as f:
+        # bisect_right over the record index: the first record *after* t_s.
+        lo, hi = 0, header.records
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if _record_t(f, mid) <= t_s:
+                lo = mid + 1
+            else:
+                hi = mid
+        if lo == 0:
+            return None                       # the track starts after t_s
+        f.seek(HEADER_STRUCT.size + (lo - 1) * RECORD_STRUCT.size)
+        raw = f.read(RECORD_STRUCT.size)
+
+    if len(raw) < RECORD_STRUCT.size:
+        # Torn tail: the writer was mid-record. Nothing whole to read here.
         return None
 
-    record = arr[i]
-    return {name: (None if record[name] != record[name] else float(record[name]))
-            for name in COLUMNS}
+    values = RECORD_STRUCT.unpack(raw)
+    return {name: (None if v != v else float(v))
+            for name, v in zip(COLUMNS, values)}
+
+
+def _record_t(f, index: int) -> float:
+    """The timestamp of one record, without reading the pose beside it."""
+    f.seek(HEADER_STRUCT.size + index * RECORD_STRUCT.size)
+    return struct.unpack("<d", f.read(8))[0]
 
 
 # ── Computing one ────────────────────────────────────────────────────────────

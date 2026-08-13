@@ -197,17 +197,21 @@ async def seek_model(target_s: float) -> None:
 
     Called by the replay loop before it emits anything of the new position (see
     PlaybackEngine.start's `on_seek`), so the whole warm-up happens with the
-    replay parked inside this call — nothing of where we no longer are can reach
-    the model being built.
+    replay parked inside this call — it cannot queue a row of the old position
+    while the model that will read it is being built.  What may still be in
+    flight is a packet queued *before* the seek and not yet consumed; the
+    warm-up's own `await` gives `processing_loop` ample room to drain it, and
+    one that did arrive late would land as a backwards `ts_esp_us`, which the
+    clock reads as a discontinuity and declines to integrate.
 
-    Three things happen here that cannot happen in storage/seek.py, because they
+    Two things happen here that cannot happen in storage/seek.py, because they
     are about the *live* wiring rather than about warming a model:
 
       * the substitution itself, in one uninterrupted step.  There is no `await`
         between the lines below, so `processing_loop` cannot slip a packet
-        between the model that was and the model that is;
-      * `continue_from`, which carries the event numbering across instances —
-        it is monotonic over the whole process (model/types.py);
+        between the model that was and the model that is.  `continue_from`
+        carries over the bus and the event numbering (monotonic across the whole
+        process — model/types.py);
       * a `reset` meta on the bus.  The timeline has just moved, possibly
         backwards: `ScopeRing` clears its ring on exactly this topic, because a
         history straddling a jump makes every windowed query nonsense, and
@@ -217,7 +221,7 @@ async def seek_model(target_s: float) -> None:
     Failure is contained like the model's own: the replay loop awaits this, so
     letting an exception out would end the replay over a jump that did not work.
     The seek is then simply not applied — the replay carries on from where the
-    cursor was put, with the model it already had.
+    cursor was put, with the model it already had, and the report says why.
     """
     global model, last_seek
 
@@ -232,13 +236,12 @@ async def seek_model(target_s: float) -> None:
         )
 
         warm.continue_from(model)
-        warm.bus = bus
-        model    = warm
+        model = warm
         bus.publish(META, Meta(int(target_s * 1e6), "reset", {}))
 
         last_seek = report.as_dict()
     except Exception as e:
-        last_seek = {"target_s": round(target_s, 6), "error": str(e)}
+        last_seek = seek.SeekReport.failed(target_s, str(e)).as_dict()
         log.exception(f"Seek to {target_s:.3f}s failed — replay continues")
 
 

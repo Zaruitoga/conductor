@@ -95,6 +95,7 @@ class _Take:
             logger.write(_super(motion, i / hz, i))
         logger.stop()
 
+        self.motion  = motion          # kept: its reference() is ground truth
         self.session = session.name
         self.take    = meta.name
         self.csv     = self.sm.csv_path(take_dir)
@@ -330,6 +331,13 @@ def test_a_warmed_model_agrees_with_a_run_from_row_zero():
     off = _disagreements(reference, warmed)
     assert set(off) <= {"pos_x", "pos_y"}, f"did not converge: {off}"
 
+    # And not merely equal to the other run: the height is analytic in the
+    # simulator, so the warmed model is also checked against something outside
+    # this pipeline altogether — two runs agreeing on the same wrong number
+    # would be no comfort at all.
+    truth = _take().motion.reference(warmed.t_us / 1e6)
+    assert abs(warmed.signals["pos_z"] - truth["pz"]) < 1e-9
+
 
 def test_the_horizontal_position_is_the_one_thing_that_never_converges():
     """
@@ -435,8 +443,10 @@ def test_the_event_numbering_survives_the_substitution():
     assert warm._event_id == live._event_id
     assert warm.seq == live.seq, "a jump is the same pass, not a new run"
 
-    # And the first event out of the substituted model carries on the count.
-    warm.bus = bus
+    # And the first event out of the substituted model carries on the count —
+    # `continue_from` took over the bus as well, so it publishes where the
+    # model it replaced did.
+    assert warm.bus is bus
     frame = _next_frame(warm, take.rows[_row_at(take, 16.0):])
     assert events[-1].id == live._event_id + 1
     assert frame.seq == live.seq + 1
@@ -602,7 +612,7 @@ def test_the_live_model_is_replaced_and_the_timeline_says_so():
         assert any(kind == META and obj.topic == "reset" for kind, obj in seen)
 
         report = core.last_seek
-        assert "error" not in report, report
+        assert report["error"] is None, report["error"]
         assert report["seeded"], report["reason"]
         assert report["rows"] == int(warmup_window_s() * HZ)
     finally:

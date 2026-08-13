@@ -148,19 +148,25 @@ class Model:
 
     def continue_from(self, previous: "Model") -> None:
         """
-        Take over the numbering of the model being replaced.
+        Take over from the model being replaced: its bus, and its numbering.
+
+        The bus comes last in the wiring and first in importance — a twin is
+        built bus-less so a warm-up cannot publish, and taking over means
+        exactly that this instance now publishes where the old one did.  Doing
+        it here rather than by assigning `bus` at the call site keeps the two
+        halves of a substitution in one place.
 
         `_event_id` is monotonic across the *process* lifetime (model/types.py)
         — that is what lets a consumer prove it missed nothing — and a fresh
         instance starts at zero, so a substitution would reissue ids already
         seen.  `reset()` preserves it for the same reason; here it has to be
-        carried across instances by hand.
-
-        Assignment, not a maximum: the ids the warm-up itself burned through
-        never left that instance, and keeping them would open a gap a consumer
-        would read as a lost event.  `seq` follows the same logic — a jump is
-        the same pass continuing at another instant, not a new run.
+        carried across instances by hand.  A bus-less run burns no ids at all
+        (`_tick` only numbers what it publishes), so this is an assignment
+        rather than a maximum: an invented jump forward would open a gap a
+        consumer reads as a lost event.  `seq` follows the same logic — a jump
+        is the same pass continuing at another instant, not a new run.
         """
+        self.bus       = previous.bus
         self._event_id = previous._event_id
         self.seq       = previous.seq
 

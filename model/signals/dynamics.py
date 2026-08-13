@@ -40,6 +40,13 @@ P_MIN_SPEED_HEADING = PARAMS.declare(
     doc="En dessous de cette vitesse, le cap de déplacement n'a plus de sens "
         "et il est gelé plutôt que de partir dans le bruit.",
 )
+# The one τ in the model that is not a parameter: the shock baseline is not a
+# setting, it is what makes `accel_shock_ms2` mean anything (see below). It is
+# named here rather than written inline because a warm-up window has to know
+# about it — `PARAMS.max_tau_s()` cannot see what was never declared, so
+# storage/seek.py floors its window with this.
+SHOCK_BASELINE_TAU_S = 0.5
+
 P_RATE_TAU = PARAMS.declare(
     "rate_tau_s", default=0.05, min=0.0, max=1.0, unit="s", group="dérivées",
     tau=True,
@@ -341,6 +348,6 @@ def accel_shock_ms2(ctx):
     # Deliberately a longer constant than the derivative smoothing: the baseline
     # must follow posture changes without following the shock it is meant to
     # reveal.
-    baseline += ctx.alpha(0.5) * (value - baseline)
+    baseline += ctx.alpha(SHOCK_BASELINE_TAU_S) * (value - baseline)
     ctx.state["baseline"] = baseline
     return abs(value - baseline)

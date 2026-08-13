@@ -41,8 +41,9 @@ import logging
 import time
 from dataclasses import asdict, dataclass
 
+import config
 from model.params import PARAMS
-from model.signals.dynamics import seed_position
+from model.signals.dynamics import SHOCK_BASELINE_TAU_S, seed_position
 from storage.playback_engine import row_to_packet
 from storage.pose_track import read_header, read_pose_at
 
@@ -53,11 +54,13 @@ log = logging.getLogger("seek")
 # not a taste — see model/registry.py.
 WARMUP_TAUS = 5.0
 
-# `accel_shock_ms2` smooths its baseline with a hardcoded `ctx.alpha(0.5)`
-# rather than a declared parameter, so `max_tau_s()` cannot see it. This floor
-# is the only reason the window is not purely derived: it keeps a profile whose
-# every τ has been turned right down from leaving that baseline short.
-MIN_WINDOW_S = WARMUP_TAUS * 0.5
+# `accel_shock_ms2` smooths its baseline with a time constant that is not a
+# parameter, so `max_tau_s()` cannot see it. This floor is the only reason the
+# window is not purely derived: it keeps a profile whose every declared τ has
+# been turned right down from leaving that baseline short. Imported rather than
+# repeated — the same number in two files is one edit away from a warm-up that
+# silently stops converging.
+MIN_WINDOW_S = WARMUP_TAUS * SHOCK_BASELINE_TAU_S
 
 
 def warmup_window_s(params=PARAMS) -> float:
@@ -74,22 +77,36 @@ def warmup_window_s(params=PARAMS) -> float:
 
 @dataclass(frozen=True, slots=True)
 class SeekReport:
-    """What one jump did, for the panel and for a log line."""
+    """
+    What one jump did, for the panel and for a log line.
+
+    One shape whatever happened, including a jump that failed outright: a
+    consumer reading `playback.seek.rows` should not have to find out that the
+    key is missing today because something else went wrong.
+    """
     target_s: float
-    window_s: float
+    window_s: float          # what chose the rows below
     rows:     int            # rows re-fed
     ticks:    int            # ticks the warm-up produced
     seeded:   bool           # was the position planted from the pose track
     reason:   str | None     # why it was not, when it was not
     geometry_matches: bool | None   # None when there is no track to compare
     ms:       float          # what the whole warm-up cost
+    error:    str | None = None     # the jump did not happen at all
 
     def as_dict(self) -> dict:
         return asdict(self)
 
+    @classmethod
+    def failed(cls, target_s: float, error: str) -> "SeekReport":
+        """A jump that raised. Reported, never silent — the replay carries on."""
+        return cls(target_s=round(target_s, 6), window_s=0.0, rows=0, ticks=0,
+                   seeded=False, reason=None, geometry_matches=None, ms=0.0,
+                   error=error)
+
 
 def warm_to(live, rows: list[dict], target_s: float, *, origin_s: float = 0.0,
-            track_path: str | None = None, window_s: float | None = None):
+            track_path: str | None = None, window_s: float = 0.0):
     """
     Bring a private copy of `live` to `target_s`, and hand it back with a report.
 
@@ -102,13 +119,18 @@ def warm_to(live, rows: list[dict], target_s: float, *, origin_s: float = 0.0,
     without it the replay would resume announcing a `frame.t` of a few seconds
     while the cursor sat at thirty.
 
+    `window_s` is *recorded*, not applied — `rows` already is the window, and
+    the caller is who chose it (`warmup_window_s()`, then
+    `PlaybackEngine.warmup_rows`).  Selecting rows is the engine's job: it owns
+    the take's timeline, and re-deriving the slice here would be a second answer
+    to the same question.
+
     The returned model is *not* live yet: it has no bus and has not taken over
     the event numbering.  Both belong to the substitution, which happens back on
     the event loop in one uninterrupted step (see core.seek_model) — the twin is
     only warm here.
     """
-    t0     = time.perf_counter()
-    window = warmup_window_s() if window_s is None else window_s
+    t0 = time.perf_counter()
 
     warm = live.twin()
     warm.start_at(origin_s)
@@ -124,7 +146,7 @@ def warm_to(live, rows: list[dict], target_s: float, *, origin_s: float = 0.0,
 
     report = SeekReport(
         target_s = round(target_s, 6),
-        window_s = round(window, 3),
+        window_s = round(window_s, 3),
         rows     = len(rows),
         ticks    = ticks,
         seeded   = seeded,
@@ -197,6 +219,16 @@ def _seed(warm, track_path: str | None):
         # from somewhere else in the take, so planting it would be worse than
         # not seeding at all.
         return False, "piste incomplète avant cet instant", matches
+    if abs(pose["t"] - at_s) > config.MAX_DT_S:
+        # The track's `t` is the *model's* timeline, which holds still across a
+        # dropout it refuses to integrate; the instant reached here descends
+        # from the replay's pacing clock, which waits that same dropout out
+        # (deliberately — storage/playback_engine.py). A take with a long hole
+        # in it therefore has the two drifting apart, and a pose fetched at the
+        # wrong instant plants a position from somewhere else along the take.
+        # Bounded by the gap the model itself will not integrate: past that,
+        # say so instead of planting.
+        return False, f"piste décalée de {pose['t'] - at_s:+.2f}s ici", matches
 
     seed_position(warm, pose["x"], pose["y"])
     return True, None, matches
