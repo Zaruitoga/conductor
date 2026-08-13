@@ -7,9 +7,11 @@ the old keyboard interface's run_in_executor).
 """
 
 import asyncio
+import json
 import os
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 
 import config
 import core
@@ -21,7 +23,7 @@ from api.models import (
 )
 from osc import targets as osc_targets
 from storage.onset import onset_report
-from storage.paths import UnsafePath
+from storage.paths import UnsafePath, video_media_type
 
 router = APIRouter(prefix="/api")
 
@@ -440,6 +442,68 @@ async def take_onset(session: PathSegment, take: PathSegment) -> dict:
     # In a worker thread: a 15-minute take is ~90 000 rows through the CSV
     # decoder, and this loop is the one owning processing_loop.
     return await asyncio.to_thread(onset_report, csv_path)
+
+
+@router.get("/sessions/{session}/takes/{take}/video")
+async def take_video(session: PathSegment, take: PathSegment) -> FileResponse:
+    """
+    The take's video file, the way a `<video>` element wants it.
+
+    A dedicated endpoint rather than a static mount of `sessions/`, for three
+    reasons that are not about taste: a mount publishes `take.json` and `raw.csv`
+    beside the video, it knows files and not takes so it cannot say "this take
+    has no video", and `StaticFiles(check_dir=True)` refuses to be constructed
+    while `sessions/` does not exist — which is until the first session is
+    created, i.e. it would crash the orchestrator at startup on a fresh install.
+
+    Three things are load-bearing here:
+
+    * **`video_file` alone resolves the file.** One resolution path, so one
+      surface to validate — and it is validated again *here*, not only at the
+      PATCH that wrote it: `load_take` is deliberately tolerant of what it finds
+      on disk, so a take.json written by hand or by another version is exactly
+      the case a write-time check never sees.  This endpoint is what removed the
+      accidental defence the fixed `raw.csv` / `take.json` suffixes gave the
+      whole storage layer.
+    * **The media type comes from our table** (`storage/paths.py`), never
+      `mimetypes.guess_type`, whose answer depends on which mime files the
+      machine has.  The same table is the whitelist: servable and typed are one
+      question.
+    * **Range requests need no code.** `FileResponse` answers `206` +
+      `Content-Range` on its own, which is what makes the alignment page's frame
+      stepping possible; `tests/test_video.py` asserts it rather than trusting
+      it, since the day this stops being a `FileResponse` nothing else would say
+      so.
+
+    The absences are told apart on purpose — no such take, unreadable metadata,
+    no video named, named file gone — because each one is a different gesture for
+    whoever is looking at the alignment page.
+    """
+    sm = core.session_manager
+    try:
+        take_dir = sm.take_path(session, take)
+    except UnsafePath as e:
+        raise HTTPException(400, str(e))
+    if not os.path.isfile(sm.csv_path(take_dir)):
+        raise HTTPException(404, f"Take not found: {session}/{take}")
+
+    try:
+        video_file = sm.load_take(take_dir).video_file
+    except (FileNotFoundError, json.JSONDecodeError, TypeError):
+        raise HTTPException(404, f"Take metadata unreadable: {session}/{take}")
+    if not video_file:
+        raise HTTPException(404, f"Take has no video: {session}/{take}")
+
+    try:
+        path = sm.video_path(session, take, video_file)
+    except UnsafePath as e:
+        raise HTTPException(400, f"Refused video_file {video_file!r}: {e}")
+    if not os.path.isfile(path):
+        # Checked rather than left to FileResponse, which raises RuntimeError on
+        # a missing or non-regular file — a 500 for a video someone moved.
+        raise HTTPException(404, f"Video file missing: {video_file}")
+
+    return FileResponse(path, media_type=video_media_type(video_file))
 
 
 @router.patch("/sessions/{session}/takes/{take}")

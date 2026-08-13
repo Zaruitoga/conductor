@@ -297,6 +297,12 @@ class SessionManager:
         """
         Take metadata of one session, in index order (raw.csv required).
 
+        Each entry carries one key that is not on `TakeMeta` and never reaches
+        disk: `videos_found`, the scan of the take's folder (see `scan_videos`).
+        It sits next to the stored `video_file` rather than replacing it, so a
+        reader can see the file that was chosen and the files that are there —
+        the two disagree exactly when something needs deciding.
+
         The names here come from `os.listdir` of the tree, not from a request:
         nothing is validated for *shape*, so a take named by hand keeps listing.
         The consequence is deliberate — a take renamed to something the API's own
@@ -330,10 +336,46 @@ class SessionManager:
             if not os.path.isfile(self.csv_path(take_dir)):
                 continue
             try:
-                out.append(asdict(self.load_take(take_dir)))
+                meta = self.load_take(take_dir)
             except (FileNotFoundError, json.JSONDecodeError, TypeError):
                 continue
+            out.append({**asdict(meta),
+                        "videos_found": self.scan_videos(take_dir)})
         return out
+
+    def scan_videos(self, take_dir: str) -> list[str]:
+        """
+        The video files sitting in one take's folder, sorted.
+
+        Importing a video is a copy into the take at the Finder, so this scan is
+        how it is noticed — but it only ever *proposes*.  What a take's video is
+        remains `video_file`, written by an explicit PATCH from the page that
+        showed both, because the operator is the one who can tell whether the
+        file the folder holds is the one they mean, and which of two it is.  No
+        GET adopts, and the day videos are matched to takes by their clocks, that
+        is the seam it plugs into.
+
+        A file resolving out of the take (a symlink) is left out for the reason
+        `list_takes()` drops a take symlinked out of the tree: the same check
+        refuses to serve it, so proposing it would promise a video that never
+        loads.
+        """
+        try:
+            entries = list(os.scandir(take_dir))
+        except OSError:
+            return []
+
+        found = []
+        for entry in entries:
+            if not is_video_filename(entry.name):
+                continue
+            try:
+                path = confine(take_dir, entry.name)
+            except UnsafePath:
+                continue
+            if os.path.isfile(path):
+                found.append(entry.name)
+        return sorted(found)
 
     def load_session(self, name: str) -> SessionMeta:
         with open(os.path.join(self.session_path(name), "session.json")) as f:
