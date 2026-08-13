@@ -36,10 +36,25 @@ import re
 NAME_PATTERN = r"^[A-Za-z0-9._-]*[A-Za-z0-9][A-Za-z0-9._-]*$"
 MAX_NAME_LEN = 128
 
-# Extensions a browser can be asked to play. The list is the point: `video_file`
-# is a free `str` edited through PATCH, and it is what a future GET .../video
-# would open.
-VIDEO_EXTENSIONS = frozenset({".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi"})
+# What a video file may be called, and what it is served as — one table doing
+# both jobs, because they are the same question asked twice.  `video_file` is a
+# free `str` edited through PATCH and it is what GET .../video opens, so an
+# extension is servable exactly when this table names its type: split the two and
+# a name becomes storable but unplayable, or servable with a type nobody chose.
+#
+# Never `mimetypes.guess_type`.  Python's table initialises from system files —
+# `/etc/apache2/mime.types` supplies `.m4v` here and would not on a machine
+# without it — so a guess is a different answer on a different machine.  And a
+# wrong-but-recognised type is worse than none: the HTML spec explicitly treats a
+# parameterless `application/octet-stream` as "no type at all" and sniffs the
+# container, while `text/plain` on an MP4 makes the <video> fail outright.
+VIDEO_MEDIA_TYPES = {
+    ".mp4":  "video/mp4",
+    ".m4v":  "video/mp4",
+    ".mov":  "video/quicktime",
+    ".webm": "video/webm",
+}
+VIDEO_EXTENSIONS = frozenset(VIDEO_MEDIA_TYPES)
 
 _NAME_RE = re.compile(NAME_PATTERN)
 
@@ -77,6 +92,20 @@ def is_video_filename(name: object) -> bool:
         return False
     stem, ext = os.path.splitext(name)
     return bool(stem) and ext.lower() in VIDEO_EXTENSIONS
+
+
+def video_media_type(name: str) -> str:
+    """
+    The Content-Type this file is served with, from our table and only ours.
+
+    The fallback is unreachable through the endpoint — `is_video_filename()` has
+    already refused anything the table does not name — and it is
+    `application/octet-stream` rather than a near-miss guess for the reason the
+    table exists: parameterless octet-stream is the one type the HTML spec tells
+    a browser to sniff past, so being silent about the type beats being wrong.
+    """
+    return VIDEO_MEDIA_TYPES.get(os.path.splitext(name)[1].lower(),
+                                 "application/octet-stream")
 
 
 def confine(root: str, name: str) -> str:

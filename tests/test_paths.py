@@ -244,10 +244,17 @@ def test_the_shape_pattern_rejects_what_a_path_segment_must_never_be():
 
 
 def test_video_filenames_are_a_filename_and_a_known_extension():
-    for name in ("clap.mp4", "prise-3.MOV", "a.b.mkv", "001_take.webm"):
+    """
+    The known extensions are exactly the ones `VIDEO_MEDIA_TYPES` names a type
+    for — one list deciding both what may be stored and what may be served, so
+    `.mkv` and `.avi` are refused here rather than storable and then unplayable
+    (see tests/test_video.py).
+    """
+    for name in ("clap.mp4", "prise-3.MOV", "a.b.m4v", "001_take.webm"):
         assert is_video_filename(name), f"{name!r} should be accepted"
     for name in ("../../etc/passwd", "/etc/passwd", "a/b.mp4", "a\\b.mp4",
-                 "..", "clip.exe", "clip", "clip.mp4.exe", ".mp4", ""):
+                 "..", "clip.exe", "clip", "clip.mp4.exe", ".mp4", "",
+                 "a.b.mkv", "archive.avi"):
         assert not is_video_filename(name), f"{name!r} should be refused"
 
 
