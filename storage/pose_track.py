@@ -271,6 +271,33 @@ def read_poses(path: str, *, start: float | None = None, end: float | None = Non
             for name in COLUMNS}
 
 
+def read_pose_at(path: str, t_s: float, *,
+                 header: TrackHeader | None = None) -> dict | None:
+    """
+    The last pose at or before a take time, or None when there is none.
+
+    At or before, never the nearest: a pose is a point on a trajectory the
+    wheel actually passed through, and rounding forward would hand back a
+    position it had not reached yet.  This is what a seek plants its position
+    integrator with (storage/seek.py) — the one piece of state exponential
+    forgetting never gives back.
+
+    NaN comes back as None here too, so "no horizontal position at all" — a
+    wheel recorded without a gyro — stays distinct from a position of zero.
+    """
+    arr = read_array(path, header)
+    if arr.size == 0:
+        return None
+
+    i = int(np.searchsorted(arr["t"], t_s, side="right")) - 1
+    if i < 0:
+        return None
+
+    record = arr[i]
+    return {name: (None if record[name] != record[name] else float(record[name]))
+            for name in COLUMNS}
+
+
 # ── Computing one ────────────────────────────────────────────────────────────
 
 def compute_pose_track(csv_path: str, out_path: str, *,

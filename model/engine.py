@@ -108,6 +108,85 @@ class Model:
             self.bus.publish(META, Meta(0, "reset", {}))
         log.info("Model reset")
 
+    # ── Substitution: warming a twin, then taking over ───────────────────────
+
+    def twin(self) -> "Model":
+        """
+        A private instance wired like this one, and deliberately bus-less.
+
+        This is what a seek warms up (storage/seek.py): the model is re-fed a
+        few seconds of take at full tilt, which makes the detectors fire, and
+        those events must not reach the bus — a jump would otherwise send a
+        handful of impacts into Live (ADR 0004).  No bus rather than a filter
+        someone could forget to apply.
+
+        The registries are *shared*, unlike the pose track's isolated ones
+        (storage/pose_track.py).  The two want opposite things: a track must not
+        depend on which signals happen to be switched off in the Signaux tab,
+        while a twin is about to *become* the live model and must therefore
+        honour exactly the same switches and report into the same counters.
+        """
+        return Model(
+            bus        = None,
+            max_gap_us = self._max_gap_us,
+            esp_state  = self._esp_state,
+            registry   = self.registry,
+            detectors  = self.detectors,
+        )
+
+    def start_at(self, t_s: float) -> None:
+        """
+        Place the next sample at `t_s` on the timeline rather than at zero.
+
+        During a replay the model's timeline *is* the take's — the pass opens
+        with a `reset()`, so t = 0 is the take's first sample.  A warm-up that
+        began mid-take and anchored at zero would have the replay resume
+        reporting a `frame.t` of a few seconds while the cursor sat at thirty,
+        and every consumer reading that timeline would be off by the jump.
+        """
+        self.clock.reset(int(t_s * 1e6))
+
+    def continue_from(self, previous: "Model") -> None:
+        """
+        Take over the numbering of the model being replaced.
+
+        `_event_id` is monotonic across the *process* lifetime (model/types.py)
+        — that is what lets a consumer prove it missed nothing — and a fresh
+        instance starts at zero, so a substitution would reissue ids already
+        seen.  `reset()` preserves it for the same reason; here it has to be
+        carried across instances by hand.
+
+        Assignment, not a maximum: the ids the warm-up itself burned through
+        never left that instance, and keeping them would open a gap a consumer
+        would read as a lost event.  `seq` follows the same logic — a jump is
+        the same pass continuing at another instant, not a new run.
+        """
+        self._event_id = previous._event_id
+        self.seq       = previous.seq
+
+    @property
+    def last_tick_s(self) -> float | None:
+        """
+        Where this model has got to on its timeline, or None before it ticks.
+
+        Not the same question as "what instant was asked for": a warm-up stops
+        on the last row *before* the one the replay resumes on, and the seed has
+        to be planted where the model actually stands — one tick of a rolling
+        wheel is nine centimetres at 2 m/s.
+        """
+        return None if self._last_tick_us is None else self._last_tick_us / 1e6
+
+    def node_state(self, name: str) -> dict:
+        """
+        One node's persistent storage — the very dict `ctx.state` hands it.
+
+        Public because a warm-up has to plant the position integrator where the
+        pose track says the wheel was: position is the one thing exponential
+        forgetting never gives back (ADR 0004).  Which key holds what stays the
+        node's business — see `seed_position` in model/signals/dynamics.py.
+        """
+        return self._states.setdefault(name, {})
+
     # ── The one entry point ──────────────────────────────────────────────────
 
     def feed(self, packet: dict) -> Frame | None:

@@ -29,10 +29,11 @@ from transport.protocol         import HB_TYPE
 from model.bus                  import ModelBus
 from model.engine               import Model
 from model.scope                import ScopeRing
-from model.types                import FRAME, META, RAW
+from model.types                import FRAME, META, RAW, Meta
 from osc.bridge                 import OscBridge
 from osc.live                   import LiveLink
 from osc.routes                 import RouteTable
+from storage                    import seek
 from storage.session_manager    import SessionManager
 from storage.csv_logger         import CSVLogger
 from storage.playback_engine    import PlaybackEngine
@@ -90,6 +91,12 @@ bus.subscribe_sync("scope", (FRAME, META), scope.on_bus)
 # and the panel must say so rather than showing a plausible stale frame.
 model_errors = {"count": 0, "last": None}
 _MODEL_LOG_EVERY = 200
+
+# What the last jump did — window used, rows re-fed, whether the position could
+# be seeded from the pose track, and what it cost (see storage/seek.py). Kept
+# here rather than on the engine because none of it is the replay's business:
+# the engine moved a cursor, all of this happened to the model.
+last_seek: dict | None = None
 
 session_manager = SessionManager()
 csv_logger      = CSVLogger(session_manager)
@@ -164,6 +171,89 @@ def accept_live(packet: dict) -> bool:
     EspHealth would report the ESP offline a few seconds into every replay.
     """
     return not playback_engine.active or packet.get("typeId") == HB_TYPE
+
+
+def reset_model() -> None:
+    """
+    Reset whichever model is live, at the start of every replay pass.
+
+    Handed to `PlaybackEngine` in place of `model.reset` itself: a bound method
+    pins the instance it was taken from, and a seek *replaces* that instance —
+    the next pass of a looping replay would then be resetting a model nothing
+    reads any more, while the live one kept the take's final position.
+
+    The last jump's report goes with it. A pass starting over at row 0 is
+    exactly when a jump stops being true, whether it is a new take or the next
+    turn of a loop.
+    """
+    global last_seek
+    last_seek = None
+    model.reset()
+
+
+async def seek_model(target_s: float) -> None:
+    """
+    Bring the model to a take instant, and put it in place of the live one.
+
+    Called by the replay loop before it emits anything of the new position (see
+    PlaybackEngine.start's `on_seek`), so the whole warm-up happens with the
+    replay parked inside this call — nothing of where we no longer are can reach
+    the model being built.
+
+    Three things happen here that cannot happen in storage/seek.py, because they
+    are about the *live* wiring rather than about warming a model:
+
+      * the substitution itself, in one uninterrupted step.  There is no `await`
+        between the lines below, so `processing_loop` cannot slip a packet
+        between the model that was and the model that is;
+      * `continue_from`, which carries the event numbering across instances —
+        it is monotonic over the whole process (model/types.py);
+      * a `reset` meta on the bus.  The timeline has just moved, possibly
+        backwards: `ScopeRing` clears its ring on exactly this topic, because a
+        history straddling a jump makes every windowed query nonsense, and
+        `OscBridge` clears its deadband memory, so the first value after the
+        jump is sent even if it happens to equal the last one before it.
+
+    Failure is contained like the model's own: the replay loop awaits this, so
+    letting an exception out would end the replay over a jump that did not work.
+    The seek is then simply not applied — the replay carries on from where the
+    cursor was put, with the model it already had.
+    """
+    global model, last_seek
+
+    try:
+        window = seek.warmup_window_s()
+        rows, origin_s = playback_engine.warmup_rows(target_s, window)
+        track = _pose_track_path(playback_engine.session, playback_engine.take)
+
+        warm, report = await asyncio.to_thread(
+            seek.warm_to, model, rows, target_s,
+            origin_s=origin_s, track_path=track, window_s=window,
+        )
+
+        warm.continue_from(model)
+        warm.bus = bus
+        model    = warm
+        bus.publish(META, Meta(int(target_s * 1e6), "reset", {}))
+
+        last_seek = report.as_dict()
+    except Exception as e:
+        last_seek = {"target_s": round(target_s, 6), "error": str(e)}
+        log.exception(f"Seek to {target_s:.3f}s failed — replay continues")
+
+
+def _pose_track_path(session: str | None, take: str | None) -> str | None:
+    """The take's pose track, or None when there cannot be one to read."""
+    if not session or not take:
+        return None
+    try:
+        return pose_tracks.path(session, take)
+    except Exception as e:
+        # A name that no longer resolves inside sessions/ (a symlink moved
+        # mid-replay). Not seeding is a degradation; raising would end the
+        # replay, which is not.
+        log.warning(f"No pose track path for {session}/{take}: {e}")
+        return None
 
 
 async def processing_loop(q: asyncio.Queue) -> None:
@@ -322,6 +412,14 @@ def playback_dict() -> dict:
         "total_s":   round(pb.total_s, 1),
         "speed":     pb.speed,
         "loop":      pb.loop,
+        # A jump asked for and not yet applied — a seek requested while paused
+        # stays pending until the replay next runs, and without this the panel
+        # would have nothing to show for the drag that asked for it.
+        "seek_target_s": pb.seek_target_s,
+        # What the last jump of *this* replay did (storage/seek.py). Gated on
+        # `active` because a report outliving the replay it belongs to would be
+        # a fact about nothing.
+        "seek":          last_seek if pb.active else None,
     }
 
 

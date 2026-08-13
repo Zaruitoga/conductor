@@ -98,10 +98,18 @@ class TimeBase:
         self._max_gap_us = int(max_gap_us)
         self.reset()
 
-    def reset(self) -> None:
-        """Forget the timeline. The next sample becomes the new origin."""
+    def reset(self, origin_us: int = 0) -> None:
+        """
+        Forget the timeline. The next sample becomes the new origin.
+
+        `origin_us` places that origin somewhere other than zero, which is what
+        a seek's warm-up needs: the model's timeline *is* the take's during a
+        replay (the pass starts with a reset, so t = 0 is the take's start), and
+        a warm-up begun mid-take would otherwise have the replay resume
+        reporting a few seconds while the cursor sat at thirty.
+        """
         self._last_raw: int | None = None
-        self.t_us:      int = 0
+        self.t_us:      int = int(origin_us)
         # Counters, surfaced in the panel: seeing "wraps: 1" after 72 minutes is
         # how you confirm the rollover was handled instead of wondering.
         self.samples:        int = 0
@@ -122,8 +130,9 @@ class TimeBase:
 
         if self._last_raw is None:
             self._last_raw = raw
-            self.t_us = 0
-            return Tick(0, None, FIRST)
+            # t_us is whatever the origin was set to — 0 unless a warm-up placed
+            # this timeline somewhere inside a take (see reset).
+            return Tick(self.t_us, None, FIRST)
 
         delta = raw - self._last_raw
         status = OK

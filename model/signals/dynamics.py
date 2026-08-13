@@ -24,11 +24,13 @@ from model.signals.wheel import angle_delta_deg, heading_of, kinematics
 
 P_MOTION_TAU_FAST = PARAMS.declare(
     "motion_tau_fast_s", default=0.12, min=0.01, max=2.0, unit="s", group="énergie",
+    tau=True,
     doc="Constante de temps de l'enveloppe rapide du mouvement — ce qui suit "
         "le geste.",
 )
 P_MOTION_TAU_SLOW = PARAMS.declare(
     "motion_tau_slow_s", default=2.5, min=0.1, max=30.0, unit="s", group="énergie",
+    tau=True,
     doc="Constante de temps de l'enveloppe lente — le niveau général de la "
         "séquence, dont la rapide se détache.",
 )
@@ -40,6 +42,7 @@ P_MIN_SPEED_HEADING = PARAMS.declare(
 )
 P_RATE_TAU = PARAMS.declare(
     "rate_tau_s", default=0.05, min=0.0, max=1.0, unit="s", group="dérivées",
+    tau=True,
     doc="Lissage appliqué aux dérivées d'angle (précession, inclinaison). "
         "0 = brut. Une dérivée non lissée à 100 Hz est dominée par la "
         "quantification du capteur.",
@@ -133,6 +136,24 @@ def _integrate(ctx):
 
     ctx.scratch["position"] = (px, py)
     return px, py
+
+
+def seed_position(model, x: float, y: float) -> None:
+    """
+    Plant the integrator where a take says the wheel was.
+
+    Every other value in the model forgets its past in ~5 τ, so a few seconds
+    of re-feeding recovers it; the horizontal position is a path integral and
+    never comes back (ADR 0004).  Without this, resuming a take at a chosen
+    instant teleports the wheel between the position read off the pose track
+    and the one the integrator happens to have landed on.
+
+    It lives here rather than in the seek code because *where* px/py are kept is
+    `_integrate`'s business — the two are three lines apart precisely so they
+    cannot drift.  Call it after the warm-up, never before: the run that
+    follows would integrate away from the seeded point instead of towards it.
+    """
+    model.node_state("pos_x").update(px=float(x), py=float(y))
 
 
 # ── Speed and heading ────────────────────────────────────────────────────────
