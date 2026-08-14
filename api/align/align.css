@@ -1,0 +1,150 @@
+/* Palette du panneau et du viz (api/static/style.css, api/viz/viz.css). */
+:root {
+  --bg: #1a1d21;
+  --card: #242a30;
+  --border: #353c44;
+  --text: #e6e9ec;
+  --muted: #8a939c;
+  --accent: #4a9eff;
+  --ok: #3fb950;
+  --bad: #f85149;
+  --warn: #d29922;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 system-ui, -apple-system, sans-serif;
+}
+
+/* La disposition : haut en bas, et elle ne bouge jamais. */
+#app {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-rows: auto 1fr auto auto;
+}
+
+/* ── En-tête ──────────────────────────────────────────────────────────────── */
+header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 6px 12px;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+}
+header .back { color: var(--accent); text-decoration: none; font-size: 15px; }
+header .keys { flex: 1; min-width: 220px; font-size: 11px; line-height: 1.3; text-align: right; }
+#video-line { font-size: 11.5px; display: inline-flex; align-items: center; gap: 6px; }
+
+/* ── Vidéo ────────────────────────────────────────────────────────────────── */
+#stage { position: relative; min-height: 0; background: #000; }
+#stage.empty { background: var(--bg); display: grid; place-items: center; padding: 16px; }
+#stage video {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: contain; background: #000;
+}
+#stage.empty video { display: none; }
+
+#stage-msg { max-width: 64ch; }
+#stage-msg[hidden] { display: none; }
+
+#hud {
+  position: absolute; left: 12px; bottom: 12px; z-index: 3;
+  display: flex; align-items: center; gap: 10px;
+  background: #000b; padding: 6px 10px; border-radius: 6px;
+}
+#hud[hidden] { display: none; }
+
+/* ── Réglette (temps vidéo, la seule de la page) ──────────────────────────── */
+.strip {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 12px;
+  background: var(--card);
+  border-top: 1px solid var(--border);
+}
+.strip .track { position: relative; flex: 1; height: 22px; }
+.strip #scrub { position: absolute; inset: 0; width: 100%; margin: 0; }
+.strip #play { width: 38px; text-align: center; }
+.strip #dur { white-space: nowrap; font-size: 12px; }
+
+/* ── Courbe + candidats ───────────────────────────────────────────────────── */
+.curvebox { border-top: 1px solid var(--border); background: var(--card); }
+#curve { display: block; width: 100%; height: 140px; cursor: crosshair; touch-action: none; }
+.bar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 8px 12px; min-height: 42px;
+}
+.cands { display: flex; gap: 5px; flex-wrap: wrap; }
+.cand {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  background: #1f242a; color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px 9px; font: 400 12px system-ui; line-height: 1.2; cursor: pointer;
+}
+.cand.on { border-color: var(--ok); background: #1e2b21; }
+.cand .dim { font-size: 10.5px; }
+#note { flex: 1; font-size: 11.5px; text-align: right; }
+
+/* ── Communs ──────────────────────────────────────────────────────────────── */
+.mono { font-family: ui-monospace, monospace; }
+.big { font-size: 16px; font-weight: 600; }
+.dim { color: var(--muted); }
+.warn { color: var(--warn); }
+.bad { color: var(--bad); }
+
+.chip {
+  border: 1px solid var(--border); border-radius: 99px;
+  padding: 1px 9px; font-size: 11px; color: var(--muted);
+}
+.pill {
+  border: 1px solid var(--border); border-radius: 99px;
+  padding: 1px 9px; font-size: 11px; color: var(--muted); white-space: nowrap;
+}
+.pill.ok { border-color: var(--ok); color: var(--ok); }
+.pill.todo { border-color: var(--warn); color: var(--warn); }
+.pill.none { opacity: .55; }
+
+button {
+  background: var(--accent); color: #0d1013; border: 0; border-radius: 5px;
+  padding: 5px 12px; font: 600 13px system-ui; cursor: pointer;
+}
+button:hover:not(:disabled) { filter: brightness(1.1); }
+button:disabled { opacity: .4; cursor: not-allowed; }
+button.ghost {
+  background: transparent; color: var(--text);
+  border: 1px solid var(--border); font-weight: 400; padding: 3px 9px; font-size: 12px;
+}
+button.ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+
+select {
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 5px;
+  padding: 4px 8px; font: inherit; max-width: 40vw;
+}
+input[type=range] { accent-color: var(--accent); height: 22px; }
+kbd {
+  background: #0d1013; border: 1px solid var(--border); border-radius: 3px;
+  padding: 0 4px; font: 11px ui-monospace, monospace;
+}
+code { background: #0d1013; padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+
+/* Les quatre états dégradés : un encadré, jamais un vide. */
+.msg {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 14px; border: 1px dashed var(--border); border-radius: 8px;
+  background: var(--card);
+}
+.msg.bad { border-color: var(--bad); }
+.msg.warn { border-color: var(--warn); }
+.msg b { font-size: 14px; }
+.msg span { color: var(--muted); }
+.msg .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
