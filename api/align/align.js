@@ -55,6 +55,7 @@ const S = {
   pick: 0,             // index of the candidate held
   clock: null,         // VideoClock over the <video>
   loading: null,       // AbortController for the current load's listeners
+  stageMsg: null,      // the degraded-state panel currently over the video, if any
   videoError: false,
   token: 0,            // load generation — a late event from a previous take is dropped
   dragging: false,
@@ -263,11 +264,18 @@ function renderStage() {
         Rien à aligner tant qu'il n'est pas lisible.</span></div>`;
   }
 
+  S.stageMsg = html;
   box.innerHTML = html ?? "";
   box.hidden = !html;
   $("stage").classList.toggle("empty", !!html);
-  $("hud").hidden = !!html || !S.clock;
+  setProp($("hud"), "hidden", hudHidden());
 }
+
+// One predicate, two callers. Stated twice it was stated differently — the
+// per-frame path re-derived it by reading `stage-msg`'s `hidden` back out of the
+// DOM, which is the same rule spelled backwards and one edit away from
+// disagreeing with itself.
+const hudHidden = () => !S.clock || !!S.stageMsg;
 
 // The other two degraded states: "no gyro stream in this take" is not "nothing
 // detected". Take 001 of the reference session is 171 rows of GAME_RV — the
@@ -346,7 +354,7 @@ function renderNow() {
   setProp($("scrub"), "max", String(dur || 1));
   if (clock && !S.dragging) $("scrub").value = clock.media;
 
-  setProp($("hud"), "hidden", !clock || !$("stage-msg").hidden);
+  setProp($("hud"), "hidden", hudHidden());
   if (clock) {
     setText($("hud-time"), `${clock.media.toFixed(3)} s`);
     setText($("hud-src"), clock.rvfc === false
@@ -444,8 +452,14 @@ function setProp(el, k, v) { if (el[k] !== v) el[k] = v; }
   });
   scrub.oninput = (e) => S.clock?.seek(+e.target.value);
 
-  $("session").onchange = (e) => selectSession(e.target.value);
-  $("take").onchange = (e) => selectTake(e.target.value);
+  // Blurred after the choice, for the same reason the scrubber is: a <select>
+  // that keeps focus swallows `↑`/`↓`, and here they would change *take* — a
+  // whole CSV read per keypress — instead of cycling candidates, which is the
+  // gesture this page is built around. Blurring keeps the panel's doctrine
+  // intact (shortcuts stay suppressed while a control is in use) rather than
+  // carving SELECT out of it.
+  $("session").onchange = (e) => { e.target.blur(); selectSession(e.target.value); };
+  $("take").onchange = (e) => { e.target.blur(); selectTake(e.target.value); };
   addEventListener("resize", () => curve.draw());
 
   // The URL names a take when the page is opened from elsewhere; changing take

@@ -11,15 +11,19 @@
 //
 // Two domains, never added
 // ------------------------
-// Requests live in `ct` (the `currentTime` domain), readings live in `media`
-// (the `mediaTime` domain), and the two are never summed. Nothing guarantees
-// they share an origin: an MP4 edit list, or a stream whose first frame is not
-// at zero, installs a constant between them. Aiming at "`mediaTime` + an
-// interval" then aims beside the mark, always on the same side — measured on the
-// prototype's bench: with a −0.05 s offset, 29 seeks without the position moving
-// at all. This page only ever seeks (a scrubber writes `ct`, the chain reads
-// `media`), so the rule costs nothing here; it is stated because the frame
-// stepping of #27 lands in this file and lives or dies by it.
+// Requests are made in the `currentTime` domain (`seek()` writes
+// `video.currentTime`), readings come from the `mediaTime` domain (`media`), and
+// the two are never summed. Nothing guarantees they share an origin: an MP4 edit
+// list, or a stream whose first frame is not at zero, installs a constant
+// between them. Aiming at "`mediaTime` + an interval" then aims beside the mark,
+// always on the same side — measured on the prototype's bench: with a −0.05 s
+// offset, 29 seeks without the position moving at all.
+//
+// This page only ever seeks to an absolute instant, so the rule costs nothing
+// here; it is stated because the frame stepping of #27 lands in this file and
+// lives or dies by it. That is also why no request cursor is kept as a field
+// yet: stepping needs one, nothing here reads it, and a value written and never
+// read is a value nothing keeps honest.
 //
 // One permanent chain
 // -------------------
@@ -42,7 +46,6 @@ export class VideoClock {
   constructor(video) {
     this.v      = video;
     this.media  = 0;      // PTS of the displayed frame   (mediaTime domain)
-    this.ct     = 0;      // our request cursor            (currentTime domain)
     this.frames = 0;      // presentations since boot — an event counter, not a frame number
     this.rvfc   = RVFC ? null : false;   // null = undecided, false = never calls back
     this.dead   = false;
@@ -129,13 +132,12 @@ export class VideoClock {
     const want = Math.max(0, v.duration ? Math.min(t, v.duration - 1e-3) : t);
     if (this.rvfc === false) {
       if (Math.abs(v.currentTime - want) > 1e-6) { v.currentTime = want; await this._seeked(); }
-      this.ct = this.media = v.currentTime;
+      this.media = v.currentTime;      // no second domain to keep apart: this is all there is
       return;
     }
     const seen = this.frames;
     if (Math.abs(v.currentTime - want) > 1e-6) { v.currentTime = want; await this._seeked(); }
     await this._settle(() => this.frames !== seen);
-    this.ct = want;
   }
 
   // One pending request, latest wins. A drag emits dozens of these a second and

@@ -264,7 +264,7 @@ export class CurveView {
       this._marker(g, X(playhead), h, COL.playhead, 1.5, false);
     }
 
-    this._axis(g, w, h);
+    this._axis(g);
   }
 
   _marker(g, x, h, color, width, dashed) {
@@ -292,7 +292,7 @@ export class CurveView {
   // The top of the scale, named. Without it an autoscaled window would be a
   // shape with no magnitude, and a quiet stretch blown up to full height would
   // be indistinguishable from a violent one.
-  _axis(g, w, h) {
+  _axis(g) {
     g.fillStyle = COL.axis;
     g.font = "10px system-ui";
     const y = this.ymax;
