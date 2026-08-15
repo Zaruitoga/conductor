@@ -120,6 +120,29 @@ export async function run(mod = "./video.js") {
     s.dispose();
   }
 
+  // `⇧` must still travel ten frames after the arrows have been used — and the
+  // arrows are used *alternately*, since comparing a frame with the pinned one
+  // is exactly a walk back and forth. The distance a jump travels and the
+  // distance a probe starts from are two different numbers; conflating them
+  // lets the second erode the first, silently, in the one workflow this page
+  // exists for.
+  async function jumped(name, pts, opt, alternations) {
+    const v = new FakeVideo(pts, opt);
+    const s = new VideoClock(v);
+    s.rvfc = true;
+    await s.measure(4);
+    const start = s.media;
+    for (let i = 0; i < alternations; i++) { await s.step(1); await s.step(-1); }
+    await s.jump(10);
+    const travelled = s.media - start;
+    const want = pts[10] - pts[0];
+    const ok = Math.abs(travelled - want) < 1.5 * (1 / 30);   // ±1 frame: a jump is coarse
+    log.push({ cas: name, ok, seeks: v.seeks,
+               lu: [+travelled.toFixed(4), `${(travelled / (1 / 30)).toFixed(1)} frames`],
+               attendu: [+want.toFixed(4), "10.0 frames"] });
+    s.dispose();
+  }
+
   const cfr = grid(40, 1 / 30);
   const vfr = grid(40, 1 / 30, 0.004);     // ±4 ms  : max/min ≈ 1.3 ⇒ tight
   const wild = grid(40, 1 / 30, 0.012);    // ±12 ms : max/min ≈ 2.1 ⇒ a ramp
@@ -144,6 +167,10 @@ export async function run(mod = "./video.js") {
   await measured("cadence mesurée · CFR 24 fps, décalé de −0,05 s", cfr24, { off: -0.05 }, 1 / 24);
   await measured("cadence mesurée · VFR ±4 ms (une des deux durées)", vfr, {},
                  [1 / 30 - 0.005, 1 / 30 + 0.005]);
+
+  await jumped("⇧ = dix frames, sans pas préalable", cfr, {}, 0);
+  await jumped("⇧ = dix frames après 4 allers-retours ←/→", cfr, {}, 4);
+  await jumped("⇧ = dix frames après 4 allers-retours, décalé de −0,05 s", cfr, { off: -0.05 }, 4);
 
   window.requestAnimationFrame = raf;
   const bad = log.filter((r) => !r.ok).length;

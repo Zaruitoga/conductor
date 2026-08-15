@@ -53,6 +53,9 @@ const PROBE_S        = 0.008;
 const MEASURE_FRAMES = 5;
 
 const MAX_PROBES  = 20;   // one step gives up after this many, rather than never
+// A measurement probes in `PROBE_S` (8 ms) rather than in quarter-frames, so it
+// needs more room to cross one frame — and it is the one walk allowed to be slow.
+const MEASURE_PROBES = 40;
 const MAX_PENDING = 4;    // key-repeat backlog: leaning on the key is not a queue
 const FALLBACK_FPS = 30;  // only ever used where there is no rVFC to measure with
 
@@ -73,14 +76,29 @@ export class VideoClock {
     this.dt     = 1 / FALLBACK_FPS;
     this.spread = null;   // [min, max] of the observed PTS intervals
     this.gran   = null;   // the shortest of them: the probe unit
-    this.trace  = [];     // [asked, read, presentations] of the last probes
 
-    this._ctStep  = null; // one frame's distance, measured in the *request* domain
+    // Two distances in the request domain, and they must not be one field.
+    //
+    //   `_ctFrame` — one frame, measured once by `measure()`. It is what a jump
+    //     multiplies, so it has to stay put.
+    //   `_ctStep`  — where a forward probe *starts*. It adapts, and it is
+    //     allowed to shrink: starting short only costs an extra probe, while
+    //     starting long risks stepping over a frame.
+    //
+    // They were one field. A backward step leaves the cursor a hair inside the
+    // previous frame, so the next forward step succeeds on its first probe and
+    // writes that shorter distance back — and walking back and forth is exactly
+    // what comparing against the pinned frame *is*. Four round trips took `⇧`
+    // from ten frames to five, silently. The bench pins it now.
+    this._ctFrame = null;
+    this._ctStep  = null;
     this._fns     = [];
     this._want    = null;
     this._seeking = false;
     this._pending = 0;
     this._busy    = false;
+    this._gen     = 0;    // bumped by a user gesture: a measurement in flight gives up
+    this._queue   = Promise.resolve();
     this._pump();
   }
 
@@ -182,26 +200,62 @@ export class VideoClock {
     if (Math.abs(v.currentTime - want) > 1e-6) { v.currentTime = want; await this._seeked(); }
     await this._settle(() => this.frames !== seen);
     this.ct = want;
-    if (this.trace.length > 39) this.trace.shift();
-    this.trace.push([+want.toFixed(4), +this.media.toFixed(4), this.frames - seen]);
     return want;
+  }
+
+  // Walk away from `from` by `d` at a time until `done()`, bounded.
+  //
+  // The one shape all three drivers share: a probe is a request, and what
+  // answers is a *change* in the reading — so the loop can only stop on the
+  // reading, never on having reached some computed value. Returns the last
+  // request made. Stops early where the clamp stops moving it, which is the end
+  // of the file and therefore no frame that way.
+  async _walk(from, d, done, limit = MAX_PROBES) {
+    let asked = from, last = null;
+    if (done()) return asked;          // already true: probing would only move the cursor
+    for (let i = 0; i < limit && !this.dead; i++) {
+      asked = await this._ask(asked + d);
+      if (done() || asked === last) return asked;
+      last = asked;
+    }
+    return asked;
+  }
+
+  // One driver at a time on the element.
+  //
+  // `seek()`, `step()` and `measure()` all write `v.currentTime` and all await
+  // the same `seeked`. Interleaved, each collects the other's event, and the
+  // probe reading the result would be measuring the other's request — the same
+  // confusion as the two domains, one level up. `measure()` runs a dozen probes
+  // right after `loadeddata`, which is exactly when a scrubber drag is likeliest,
+  // so this is not hypothetical.
+  _drive(fn) {
+    const run = this._queue.then(fn, fn);
+    this._queue = run.catch(() => {});
+    return run;
   }
 
   // One pending request, latest wins. A drag emits dozens of these a second and
   // only the last one is worth landing; letting them queue made the last
   // resolved promise overwrite the position, so the cursor jumped back to a
   // point clicked several seeks ago.
-  async seek(t) {
+  //
+  // `_gen` says a hand is on the controls, so a measurement still probing gives
+  // up rather than making the user wait for it.
+  seek(t) {
     this._want = t;
-    if (this._seeking) return;
+    this._gen++;
+    if (this._seeking) return this._queue;
     this._seeking = true;
-    while (this._want != null && !this.dead) {
-      const target = this._want;
-      this._want = null;
-      await this._ask(target);
-      this._emit();
-    }
-    this._seeking = false;
+    return this._drive(async () => {
+      while (this._want != null && !this.dead) {
+        const target = this._want;
+        this._want = null;
+        await this._ask(target);
+        this._emit();
+      }
+      this._seeking = false;
+    });
   }
 
   // ── The file's cadence, measured ──────────────────────────────────────────
@@ -212,51 +266,55 @@ export class VideoClock {
   // `getVideoPlaybackQuality()` would need the whole file played first.
   //
   // What comes out sizes the probe and gets displayed. It never places anything.
-  async measure(n = MEASURE_FRAMES) {
-    if (this.dead || this.rvfc === false) return;
+  //
+  // It is abandoned the moment a user gesture arrives or the take changes: it
+  // drives the *shared* `<video>` for a second or two, and left running past a
+  // `dispose()` it would be dragging the **next** take's picture around, then
+  // snapping it to zero on the way out.
+  measure(n = MEASURE_FRAMES) {
+    if (this.dead || this.rvfc === false) return Promise.resolve();
+    const gen = ++this._gen;
+    const mine = () => !this.dead && this._gen === gen;
+    return this._drive(async () => {
+      if (!mine()) return;
 
-    // First, obtain a *reading*. `media` starts at an initial value nothing
-    // reported, and a request for 0 on a video already at 0 seeks nothing — so
-    // nothing is presented. Measuring from there would fold the offset between
-    // the two domains into the first interval, which is the one mistake this
-    // file exists to avoid. `frames` counts presentations, so it is what says
-    // whether `media` has ever been anything but a default.
-    let asked = await this._ask(0), last = null;
-    for (let i = 0; this.frames === 0 && i < MAX_PROBES; i++) {
-      asked = await this._ask(asked + PROBE_S);
-      if (asked === last) break;
-      last = asked;
-    }
-    if (this.frames === 0) return;   // nothing is ever presented here: nothing to measure
+      // First, obtain a *reading*. `media` starts at an initial value nothing
+      // reported, and a request for 0 on a video already at 0 seeks nothing — so
+      // nothing is presented. Measuring from there would fold the offset between
+      // the two domains into the first interval, which is the one mistake this
+      // file exists to avoid. `frames` counts presentations, so it is what says
+      // whether `media` has ever been anything but a default.
+      let asked = await this._ask(0);
+      asked = await this._walk(asked, PROBE_S, () => this.frames > 0 || !mine());
+      if (this.frames === 0 || !mine()) return;  // nothing presented here: nothing to measure
 
-    const dPts = [], dCt = [];
-    let cur = this.media;
-    for (let i = 0; i < n; i++) {
-      const from = asked;
-      last = null;
-      for (let g = 0; Math.abs(this.media - cur) < 1e-9 && g < 40; g++) {
-        asked = await this._ask(asked + PROBE_S);
-        if (asked === last) break;              // clamped at the end of the file
-        last = asked;
+      const dPts = [], dCt = [];
+      let cur = this.media;
+      for (let i = 0; i < n && mine(); i++) {
+        const from = asked;
+        asked = await this._walk(asked, PROBE_S,
+                                 () => Math.abs(this.media - cur) > 1e-9 || !mine(),
+                                 MEASURE_PROBES);
+        if (this.media <= cur) break;
+        dPts.push(this.media - cur); dCt.push(asked - from); cur = this.media;
       }
-      if (this.media <= cur) break;
-      dPts.push(this.media - cur); dCt.push(asked - from); cur = this.media;
-    }
-    // A single aberrant interval would skew the probe unit the whole stepping
-    // depends on: take the median and keep only what orbits it.
-    const trim = (a) => {
-      const s = [...a].sort((x, y) => x - y), med = s[s.length >> 1];
-      return [med, s.filter((x) => x > med * 0.6 && x < med * 1.6)];
-    };
-    if (dPts.length) {
-      const [med, keep] = trim(dPts);
-      this.dt      = med;
-      this.spread  = [keep[0] ?? med, keep[keep.length - 1] ?? med];
-      this.gran    = this.spread[0];
-      this._ctStep = trim(dCt)[0];
-    }
-    await this._ask(0);
-    this._emit();
+      if (!mine()) return;
+      // A single aberrant interval would skew the probe unit the whole stepping
+      // depends on: take the median and keep only what orbits it.
+      const trim = (a) => {
+        const s = [...a].sort((x, y) => x - y), med = s[s.length >> 1];
+        return [med, s.filter((x) => x > med * 0.6 && x < med * 1.6)];
+      };
+      if (dPts.length) {
+        const [med, keep] = trim(dPts);
+        this.dt       = med;
+        this.spread   = [keep[0] ?? med, keep[keep.length - 1] ?? med];
+        this.gran     = this.spread[0];
+        this._ctFrame = trim(dCt)[0];    // the jump's unit: measured once, then left alone
+      }
+      if (mine()) await this._ask(0);
+      this._emit();
+    });
   }
 
   // ── One frame, exactly ────────────────────────────────────────────────────
@@ -264,9 +322,9 @@ export class VideoClock {
   // `ct` sits just past a frame boundary (within one probe of it). Walk away
   // from it by δ until the reported PTS *changes*: the first frame reached that
   // way is necessarily the neighbour, whatever offset may sit between the two
-  // domains. What is learnt on the way is one frame's distance measured *in the
-  // request domain* (`_ctStep`), so the next step starts just under it — one or
-  // two probes per keypress, and never the overshoot a wider start would risk.
+  // domains. What is learnt on the way is where the *next* forward probe should
+  // start (`_ctStep`) — one or two probes per keypress, and never the overshoot
+  // a wider start would risk. That hint is not the jump's unit: see the field.
   async _one(dir) {
     const base = this.ct, before = this.media;
     // The change must go the way we asked. The two domains can be offset, but
@@ -276,9 +334,9 @@ export class VideoClock {
     if (this.rvfc === false) { await this._ask(base + dir * this.dt); return; }
 
     const d = (this.gran ?? this.dt) / 4;
-    let eps = dir > 0 ? Math.max(d, (this._ctStep ?? 4 * d) - d) : d;
+    let eps = dir > 0 ? Math.max(d, (this._ctStep ?? this._ctFrame ?? 4 * d) - d) : d;
     let last = null;
-    for (let i = 0; i < MAX_PROBES; i++) {
+    for (let i = 0; i < MAX_PROBES && !this.dead; i++) {
       const asked = await this._ask(base + dir * eps);
       if (changed()) { if (dir > 0) this._ctStep = eps; return; }
       if (asked === last) break;          // clamped at an end of the file: no frame that way
@@ -292,22 +350,28 @@ export class VideoClock {
   // or the precision is lost exactly where it is being looked for. The queue is
   // bounded: hammering the key because nothing seems to move must not leave
   // thirty steps to replay.
-  async step(dir) {
+  step(dir) {
     this._pending = Math.max(-MAX_PENDING,
                              Math.min(MAX_PENDING, this._pending + Math.sign(dir)));
-    if (this._busy) return;
+    this._gen++;
+    if (this._busy) return this._queue;
     this._busy = true;
-    while (this._pending && !this.dead) {
-      const d = Math.sign(this._pending);
-      this._pending -= d;
-      await this._one(d);
-      this._emit();
-    }
-    this._busy = false;
+    return this._drive(async () => {
+      while (this._pending && !this.dead) {
+        const d = Math.sign(this._pending);
+        this._pending -= d;
+        await this._one(d);
+        this._emit();
+      }
+      this._busy = false;
+    });
   }
 
   // A wide jump: approximate by nature, and that is fine — it is for crossing
   // ground, and the frame reading tells the truth on arrival. Still one domain:
   // a request cursor plus a distance measured among requests.
-  jump(n) { return this.seek(this.ct + n * (this._ctStep ?? this.dt)); }
+  //
+  // It multiplies `_ctFrame`, the distance *measured once*, never the adaptive
+  // probe hint — which shrinks with use and would quietly shorten every jump.
+  jump(n) { return this.seek(this.ct + n * (this._ctFrame ?? this.dt)); }
 }

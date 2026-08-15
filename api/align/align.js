@@ -404,7 +404,11 @@ function renderCandidates() {
       <span class="dim">(${esc(S.onset.motif ?? "")})</span>`;
     return;
   }
-  if (!cands().length && !picks().length) {
+  // `picks()` contains the propositions, so an empty one means the rule ran and
+  // found nothing *and* no anchor is stored — the only case with nothing to
+  // choose from. An aligned take whose candidates have since moved still has
+  // its anchor to show, and lands on the list below.
+  if (!picks().length) {
     box.innerHTML = `<span class="warn">Rien détecté.</span>
       <span class="dim">${esc(S.onset.motif ?? "")}</span>`;
     return;
@@ -457,7 +461,7 @@ function renderAnchors() {
   const ok = $("ok");
   setText(ok, S.saving ? "…" : posed ? "Reposer sur la frame courante"
                                      : "Confirmer l'alignement");
-  ok.className = posed ? "ghost" : "";
+  setProp(ok, "className", posed ? "ghost" : "");
   setProp(ok, "disabled", S.saving || imu == null || media == null);
 }
 
@@ -474,7 +478,7 @@ function renderNote() {
   }
   if (aligned(S.take)) {
     const i = anchorPick();
-    const p = picks()[i];
+    const p = i >= 0 ? picks()[i] : null;      // -1 is "no such entry", never an index
     bits.push(p && p.cand >= 0
       ? `ancre posée sur le candidat ${p.cand + 1}`
       : `ancre posée à ${S.take.onset_imu_s.toFixed(2)} s, hors candidats`);
@@ -516,7 +520,10 @@ function renderNow() {
   const mark = $("scrub-mark");
   const posed = aligned(S.take) && dur > 0;
   setProp(mark, "hidden", !posed);
-  if (posed) mark.style.left = `${(S.take.onset_video_s / dur) * 100}%`;
+  if (posed) {
+    const left = `${(S.take.onset_video_s / dur) * 100}%`;
+    if (mark.style.left !== left) mark.style.left = left;
+  }
 
   setProp($("hud"), "hidden", hudHidden());
   if (clock) {
@@ -555,9 +562,17 @@ function togglePlay() {
   video.paused ? video.play().catch(() => {}) : video.pause();
 }
 
-// The arrows enter detail mode by themselves: no mode key to learn. Stepping a
-// playing video would fight the playback — and the frame-exact guarantee only
-// holds in pause — so entering pauses.
+// The arrows enter detail mode by themselves: no mode key to learn.
+//
+// The mode is not a gate on the arrows — they step whether or not it is set,
+// which is what "no mode key to learn" means. What it *is* is the state the
+// page is actually in: **paused, and positioned to the frame**, which is the
+// only regime where the browser's frame-exactness is guaranteed (a Chromium
+// implementer's guarantee, pause only — see `research/frame-stepping`). So
+// entering pauses, and it is left by the three gestures that end that regime:
+// `Échap`, `Espace`, and touching the scrubber. Saying so in the HUD is the
+// point — an operator who does not know whether the picture is frame-accurate
+// cannot trust the anchor they are about to pose.
 function enterDetail() {
   if (!S.clock) return false;
   if (!S.detail) {
@@ -689,6 +704,14 @@ function setProp(el, k, v) { if (el[k] !== v) el[k] = v; }
   $("play").onclick = () => { leaveDetail(); togglePlay(); };
   $("ok").onclick = confirmAlign;
 
+  // The scrubber is the one place the two domains are deliberately equated: its
+  // thumb shows a reading (`media`, a PTS) and its input is a request. That is
+  // allowed here and nowhere else — the rule `video.js` enforces is about the
+  // *arithmetic* a step does, and this control does none: it lands somewhere
+  // approximate and the very next reading says where, which is the whole point
+  // of a coarse control. Measured on the reference rush the two differ by ~54 ms
+  // on a 50 s file, i.e. a tenth of a pixel of thumb.
+  //
   // The range keeps focus after a click, so its value would freeze at the last
   // point clicked while playback moved on — and the arrow keys would go to it
   // instead of the choices. Follow the pointer, not the focus.
