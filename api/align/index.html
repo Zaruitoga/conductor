@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Conductor — Alignement</title>
+  <link rel="stylesheet" href="align.css">
+</head>
+<body>
+  <!-- Une seule disposition, stable du début à la fin : sélecteur · vidéo (la
+       plus grande surface) · réglette en temps vidéo · courbe |ω| brute. Une
+       timeline en temps de take a été construite puis retirée dans la maquette
+       #9 — elle ne disait rien que la réglette ne dise déjà. Ne pas la
+       réintroduire. La barre de confirmation viendra avec #27. -->
+  <div id="app">
+
+    <header>
+      <a class="back" href="/" title="Panneau de contrôle">←</a>
+      <select id="session" aria-label="Séance"></select>
+      <select id="take" aria-label="Take"></select>
+      <span id="badge" class="pill"></span>
+      <span id="video-line" class="dim"></span>
+      <span id="keys" class="dim keys">
+        <kbd>↑</kbd><kbd>↓</kbd> candidat · <kbd>Espace</kbd> lecture ·
+        molette zoom · glisser déplacer · double-clic tout voir
+      </span>
+    </header>
+
+    <!-- La vidéo garde la plus grande surface : le début d'un mouvement fait 3 px. -->
+    <main id="stage">
+      <video id="v" playsinline preload="auto"></video>
+      <div id="stage-msg" hidden></div>
+      <div id="hud" hidden>
+        <span id="hud-time" class="mono big">—</span>
+        <span id="hud-src" class="chip"></span>
+      </div>
+    </main>
+
+    <!-- La seule réglette de la page : temps vidéo. -->
+    <div class="strip">
+      <button id="play" disabled>▶</button>
+      <div class="track"><input id="scrub" type="range" min="0" max="1" step="0.001" value="0" disabled></div>
+      <span id="dur" class="mono dim">—</span>
+    </div>
+
+    <!-- Courbe |ω| brute en temps de take, réduite en min/max par colonne de
+         pixels au tracé (ADR 0002), avec les candidats de …/onset marqués. -->
+    <section class="curvebox">
+      <canvas id="curve"></canvas>
+      <div class="bar">
+        <div id="cands" class="cands"></div>
+        <span id="note" class="dim"></span>
+      </div>
+    </section>
+
+  </div>
+
+  <script type="module" src="align.js"></script>
+</body>
+</html>
