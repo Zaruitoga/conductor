@@ -91,6 +91,9 @@ header .keys { flex: 1; min-width: 220px; font-size: 11px; line-height: 1.3; tex
   padding: 4px 9px; font: 400 12px system-ui; line-height: 1.2; cursor: pointer;
 }
 .cand.on { border-color: var(--ok); background: #1e2b21; }
+/* Une barre, pas une bordure : « retenu » et « sélectionné » sont deux faits
+   différents et doivent pouvoir être vrais en même temps. */
+.cand.kept { box-shadow: inset 3px 0 0 var(--warn); }
 .cand .dim { font-size: 10.5px; }
 #note { flex: 1; font-size: 11.5px; text-align: right; }
 

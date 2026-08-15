@@ -75,6 +75,22 @@ const toTakeTime = (videoT) =>
     ? videoT - S.take.onset_video_s + S.take.onset_imu_s
     : null;
 
+// Which candidate the stored anchor was taken from, or -1.
+//
+// It is *derived*, never stored: what a take records is the anchor, and a
+// proposition on disk would be a number nobody can date (ADR 0001). So the
+// answer has to be recomputed, and it is allowed to be "none" — #27 lets the
+// operator correct the inertial anchor away from every candidate, precisely
+// because the detection can be wrong about the instant and right about nothing
+// else. Freezing the selection instead would claim a candidate was retained
+// even then.
+const ANCHOR_EPS = 1e-6;   // the anchor is written *from* a candidate, so exact bar float noise
+function anchorPick() {
+  const a = S.take?.onset_imu_s;
+  if (a == null) return -1;
+  return cands().findIndex((c) => Math.abs(c.t_s - a) < ANCHOR_EPS);
+}
+
 const curve = new CurveView($("curve"), {
   onPick: (t) => {          // clicking the curve picks the nearest candidate…
     if (!cands().length) return;
@@ -129,6 +145,10 @@ async function selectTake(name) {
   }
   if (token !== S.token) return;
   curve.setTake(curveSamples(), S.onset?.duree_s ?? 1);
+  // On an aligned take, open on the candidate the anchor was taken from rather
+  // than on the first one — otherwise the page would highlight a proposition
+  // that was passed over.
+  S.pick = Math.max(anchorPick(), 0);
   renderChrome();
   renderNow();
 }
@@ -303,10 +323,11 @@ function renderCandidates() {
   }
   // Each candidate carries its own evidence — the rest that precedes it — so it
   // can be judged at a glance instead of being taken on trust as a bare instant.
+  const anc = anchorPick();
   box.innerHTML = cands().map((c, i) =>
-    `<button class="cand${i === S.pick ? " on" : ""}" data-i="${i}">
+    `<button class="cand${i === S.pick ? " on" : ""}${i === anc ? " kept" : ""}" data-i="${i}">
        <b>${c.t_s.toFixed(2)} s</b>
-       <span class="dim">repos ${fmtSec(c.silence_s)}</span>
+       <span class="dim">repos ${fmtSec(c.silence_s)}${i === anc ? " · ancre" : ""}</span>
      </button>`).join("");
   box.querySelectorAll("[data-i]").forEach((b) => {
     b.onclick = () => { S.pick = +b.dataset.i; reveal(); renderChrome(); };
@@ -324,6 +345,12 @@ function renderNote() {
       : `vue complète, ${curve.dur.toFixed(2)} s`);
     bits.push(`${curveSamples().length} échantillons`);
   }
+  if (aligned(S.take)) {
+    const i = anchorPick();
+    bits.push(i >= 0
+      ? `ancre posée sur le candidat ${i + 1}`
+      : `ancre posée à ${S.take.onset_imu_s.toFixed(2)} s, hors candidats`);
+  }
   bits.push(aligned(S.take)
     ? "le curseur rouge suit la vidéo"
     : "curseur de lecture une fois l'alignement posé (#27)");
@@ -334,6 +361,7 @@ function curveState() {
   return {
     candidates: cands(),
     selected: S.pick,
+    anchor: S.take?.onset_imu_s ?? null,   // what is stored, beside what is proposed
     playhead: toTakeTime(S.clock?.media ?? null),
   };
 }
@@ -403,8 +431,11 @@ function initKeys() {
     if (isTyping(e.target)) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     switch (e.key) {
-      case "ArrowUp":   e.preventDefault(); cycle(-1); break;
-      case "ArrowDown": e.preventDefault(); cycle(1); break;
+      // Up goes to the *next* candidate, i.e. later in the take. The candidates
+      // are ordered in time and drawn on a timeline, so the axis they answer to
+      // is the curve's, not a list's — where up would mean the item above.
+      case "ArrowUp":   e.preventDefault(); cycle(1); break;
+      case "ArrowDown": e.preventDefault(); cycle(-1); break;
       case " ":
         // Space also activates a focused button — let that win.
         if (e.target instanceof Element && e.target.closest("button, a")) return;
