@@ -363,6 +363,12 @@ function updateTakeMeta() {
   $("pb-take-meta").textContent = t
     ? [t.title, t.performer, `${t.packet_count} paquets`].filter(Boolean).join(" · ")
     : "";
+  // The query is what /align/ reads at boot and then keeps true itself, so this
+  // link stays a valid address after that page has been used.
+  const link = $("pb-align");
+  link.href = t
+    ? `/align/?session=${encodeURIComponent(session.name)}&take=${encodeURIComponent(t.name)}`
+    : "/align/";
 }
 
 $("pb-refresh").onclick = refreshSessions;

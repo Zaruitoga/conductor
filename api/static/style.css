@@ -537,6 +537,9 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
   color: var(--fg-dim);
 }
 .btn--icon:hover:not(:disabled) { background: var(--bg-3); color: var(--fg); }
+/* A link wearing the button shape (the take row's « aligner »): an <a> so that
+   ⌘-click opens a tab, which is what one does with a page. */
+a.btn { text-decoration: none; }
 
 .btn--lg { padding: 10px 20px; font-size: var(--t-base); font-weight: 600; }
 .btn--block { width: 100%; }
