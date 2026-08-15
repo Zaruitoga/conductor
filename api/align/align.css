@@ -141,6 +141,10 @@ header .keys { flex: 1; min-width: 220px; font-size: 11px; line-height: 1.3; tex
   padding: 1px 9px; font-size: 11px; color: var(--muted);
 }
 .chip.on { border-color: var(--accent); color: var(--accent); }
+/* Un pas qui n'a pas parcouru ce qu'on lui a demandé : il atterrit sur une frame
+   parfaitement plausible, donc il faut que ce soit la puce qui le dise. */
+.chip.bad { border-color: var(--bad); color: var(--bad); }
+.chip:empty { display: none; }
 .chip[hidden] { display: none; }
 .pill {
   border: 1px solid var(--border); border-radius: 99px;

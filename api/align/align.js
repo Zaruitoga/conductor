@@ -505,6 +505,27 @@ function curveState() {
 // Split from the chrome on purpose: this runs on every presented frame, and
 // rebuilding the candidate list at 60 Hz would make a chip impossible to click.
 
+// « frame 147 · +1 » — the number, then what the last gesture actually travelled.
+//
+// The delta is the instrument, not the decoration: the number alone is only
+// checkable against a memory of the previous one, whereas `+1` next to a `←` is
+// the acceptance criterion itself. When it disagrees with what was asked it says
+// both (`+2 ≠ 1`), because a step that overshoots still lands somewhere
+// believable.
+//
+// Both disappear rather than degrade where the cadence was never measured: a
+// number counted with the 30 fps fallback would be confidently wrong on a 25 fps
+// file, and the PTS beside it is never wrong.
+function frameLabel(clock) {
+  const n = clock.frameNo;
+  if (n === null) return "";
+  const l = clock.last;
+  if (!l) return `frame ${n}`;
+  const sign = (v) => (v > 0 ? `+${v}` : `${v}`);
+  return l.got === l.want ? `frame ${n} · ${sign(l.got)}`
+                          : `frame ${n} · ${sign(l.got)} ≠ ${sign(l.want)}`;
+}
+
 function renderNow() {
   const clock = S.clock;
   const video = $("v");
@@ -528,6 +549,12 @@ function renderNow() {
   setProp($("hud"), "hidden", hudHidden());
   if (clock) {
     setText($("hud-time"), `${clock.media.toFixed(3)} s`);
+    setText($("hud-frame"), frameLabel(clock));
+    // A step that did not travel what it was asked is the one failure this page
+    // cannot afford to hide: it lands on a perfectly plausible frame, and the
+    // anchor posed from it is wrong by exactly as much.
+    setProp($("hud-frame"), "className",
+            clock.last && clock.last.got !== clock.last.want ? "chip mono bad" : "chip mono");
     setText($("hud-mode"), S.detail ? "détail — frame par frame" : "navigation");
     setProp($("hud-mode"), "className", S.detail ? "chip on" : "chip");
     setText($("hud-cadence"), `cadence ${clock.measured ? "mesurée" : "supposée"} `

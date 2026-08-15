@@ -59,6 +59,13 @@ const MEASURE_PROBES = 40;
 const MAX_PENDING = 4;    // key-repeat backlog: leaning on the key is not a queue
 const FALLBACK_FPS = 30;  // only ever used where there is no rVFC to measure with
 
+// Coming to a standstill: how long without an *unrequested* presentation counts
+// as "the pipeline has drained", and the wall-clock ceiling on waiting for it.
+// There is no event for this — `pause` says the element has stopped advancing,
+// not that the compositor has stopped handing over what it already holds.
+const STILL_QUIET_MS = 40;    // ~2.5 vsyncs at 60 Hz
+const STILL_MS       = 250;
+
 export class VideoClock {
   constructor(video) {
     this.v      = video;
@@ -76,6 +83,13 @@ export class VideoClock {
     this.dt     = 1 / FALLBACK_FPS;
     this.spread = null;   // [min, max] of the observed PTS intervals
     this.gran   = null;   // the shortest of them: the probe unit
+    this.origin = null;   // PTS of the file's first frame — the frame numbers' zero
+
+    // What the last gesture asked for, in frames, and what it got. Two numbers
+    // rather than one because their *disagreement* is the only thing that says a
+    // step went wrong: a walk that overshoots lands on a perfectly plausible
+    // frame, and nothing else on the page would ever mention it.
+    this.last   = null;   // {want, got} | null
 
     // Two distances in the request domain, and they must not be one field.
     //
@@ -92,10 +106,18 @@ export class VideoClock {
     // from ten frames to five, silently. The bench pins it now.
     this._ctFrame = null;
     this._ctStep  = null;
+    this._wrote   = null; // the last value actually written to the element
+    // When a presentation last arrived that *no probe had asked for* — playback,
+    // or a frame still in the compositor after one. It is what says the picture
+    // is still moving on its own; presentations we caused are not evidence of
+    // that, which is why the two are told apart rather than counted together.
+    this._asking  = false;
+    this._freeAt  = 0;
     this._fns     = [];
     this._want    = null;
     this._seeking = false;
     this._pending = 0;
+    this._jumping = 0;
     this._busy    = false;
     this._gen     = 0;    // bumped by a user gesture: a measurement in flight gives up
     this._queue   = Promise.resolve();
@@ -119,6 +141,25 @@ export class VideoClock {
    */
   get measured() { return this.spread !== null; }
 
+  /**
+   * The number of the displayed frame, counted from the file's first — or null.
+   *
+   * **Derived, and a label only.** It is the PTS divided by the measured cadence,
+   * and nothing in this class ever navigates by it: a frame's identity is still
+   * its PTS, which is what every anchor is written from. It exists because a PTS
+   * cannot be verified by eye — "0.033 further" and "one frame further" are the
+   * same claim, and only the second is checkable at a glance.
+   *
+   * Hence the two conditions. Without `origin` there is no zero to count from,
+   * and without a *measured* cadence the divisor is the 30 fps fallback, which
+   * would number a 25 fps file confidently and wrongly. Both absent, the page
+   * shows the PTS alone rather than a number it cannot stand behind.
+   */
+  get frameNo() {
+    if (this.origin === null || !this.measured) return null;
+    return Math.round((this.media - this.origin) / this.dt);
+  }
+
   // Does this browser report presented frames at all? Chrome and Safari do; an
   // embedded webview may never call back, and the page must say so rather than
   // freeze its cursor at zero. Called once the file has data — before that,
@@ -141,6 +182,7 @@ export class VideoClock {
         this.media = meta.mediaTime;
         this.rvfc  = true;
         this.frames++;
+        if (!this._asking) this._freeAt = performance.now();
         this._emit();
         this._pump();
       });
@@ -192,15 +234,76 @@ export class VideoClock {
     const want = Math.max(0, v.duration ? Math.min(t, v.duration - 1e-3) : t);
     if (this.rvfc === false) {
       if (Math.abs(v.currentTime - want) > 1e-6) { v.currentTime = want; await this._seeked(); }
-      this.ct = want;
+      this.ct = this._wrote = want;
       this.media = v.currentTime;      // no second domain to keep apart: this is all there is
       return want;
     }
     const seen = this.frames;
-    if (Math.abs(v.currentTime - want) > 1e-6) { v.currentTime = want; await this._seeked(); }
-    await this._settle(() => this.frames !== seen);
-    this.ct = want;
+    // Where the element already sits, nothing is asked and nothing new will be
+    // shown: waiting out the settle budget would only widen the window in which
+    // some *earlier* probe's late presentation can land and be taken for this
+    // one's answer.
+    const moved = Math.abs(v.currentTime - want) > 1e-6;
+    // Held across the wait, not just the write: what marks a presentation as
+    // ours is that a probe was outstanding when it arrived. Anything landing
+    // outside that is either playback or a frame the compositor still held, and
+    // `_still()` is what waits those out.
+    this._asking = true;
+    try {
+      if (moved) {
+        v.currentTime = want;
+        await this._seeked();
+        await this._settle(() => this.frames !== seen);
+      }
+    } finally {
+      this._asking = false;
+    }
+    this.ct = this._wrote = want;
     return want;
+  }
+
+  /**
+   * Bring the element to a standstill, and adopt where it actually is.
+   *
+   * Two things a step cannot begin without, and the same omission produced both.
+   *
+   * A playing element presents a frame every vsync, so the "has the reading
+   * changed?" test that a walk turns on is trivially true before the first probe
+   * has done anything — the step reports success and lands wherever playback had
+   * got to. `pause()` is not enough on its own: it says the element has stopped
+   * advancing, not that the compositor has stopped handing over what it already
+   * holds, and those in-flight frames land a vsync or two later. Keying the wait
+   * off `paused` would therefore skip exactly the window it exists for — the
+   * page pauses *before* it steps, since that is what entering detail mode does.
+   * So the standstill is observed instead: nothing presented that no probe asked
+   * for. On the common path — stepping in a video that has been still for a
+   * keypress already — that is true on entry and costs nothing.
+   *
+   * And `ct` is the **request** cursor: only `_ask` writes it, so while the video
+   * plays it still names the last seek, seconds behind the picture. `currentTime`
+   * is the one legitimate read-back — it is the request domain itself, not the
+   * reading domain — so adopting it is how the cursor rejoins a picture that
+   * moved without us. Guarded by `_wrote` so that it only ever happens when
+   * something *else* moved the element: a walk that found no frame deliberately
+   * rolls `ct` back while the element stays where the last probe left it, and
+   * that rollback must survive.
+   */
+  async _still() {
+    const v = this.v;
+    if (!v.paused) v.pause();
+    const deadline = performance.now() + STILL_MS;
+    while (performance.now() - this._freeAt < STILL_QUIET_MS
+           && performance.now() < deadline && !this.dead) {
+      // Bounded by the timeout as well as the vsync: a hidden document never
+      // fires `requestAnimationFrame` at all, and must not hang the queue.
+      await new Promise((r) => {
+        const id = setTimeout(r, 24);
+        requestAnimationFrame(() => { clearTimeout(id); r(); });
+      });
+    }
+    if (this._wrote === null || Math.abs(v.currentTime - this._wrote) > 1e-6) {
+      this.ct = this._wrote = v.currentTime;
+    }
   }
 
   // Walk away from `from` by `d` at a time until `done()`, bounded.
@@ -245,6 +348,7 @@ export class VideoClock {
   seek(t) {
     this._want = t;
     this._gen++;
+    this.last = null;          // a scrub travels no whole number of frames
     if (this._seeking) return this._queue;
     this._seeking = true;
     return this._drive(async () => {
@@ -288,6 +392,14 @@ export class VideoClock {
       asked = await this._walk(asked, PROBE_S, () => this.frames > 0 || !mine());
       if (this.frames === 0 || !mine()) return;  // nothing presented here: nothing to measure
 
+      // The frame numbering's zero: the PTS of the frame at the head of the
+      // file, read like everything else rather than assumed to be 0 — the same
+      // offset that makes the two domains incomparable puts a first frame
+      // wherever the container says. Taken twice (here, and again from the
+      // return to 0 below) and kept at the lower of the two, since a first probe
+      // that had to walk forward may already have crossed into frame 1.
+      this.origin = this.media;
+
       const dPts = [], dCt = [];
       let cur = this.media;
       for (let i = 0; i < n && mine(); i++) {
@@ -312,7 +424,10 @@ export class VideoClock {
         this.gran     = this.spread[0];
         this._ctFrame = trim(dCt)[0];    // the jump's unit: measured once, then left alone
       }
-      if (mine()) await this._ask(0);
+      if (mine()) {
+        await this._ask(0);
+        this.origin = Math.min(this.origin, this.media);
+      }
       this._emit();
     });
   }
@@ -353,18 +468,50 @@ export class VideoClock {
   step(dir) {
     this._pending = Math.max(-MAX_PENDING,
                              Math.min(MAX_PENDING, this._pending + Math.sign(dir)));
+    return this._run();
+  }
+
+  // The one loop both gestures drain, rather than one each: they share the
+  // element, so a jump arriving while a step is in flight would otherwise be
+  // dropped on the floor — the second gesture sees `_busy` and returns, and
+  // nothing is left to pick its backlog up. Jumps are taken first within a
+  // batch; the two only ever mix under hammering, and the reading tells the
+  // truth on arrival either way.
+  _run() {
     this._gen++;
     if (this._busy) return this._queue;
     this._busy = true;
     return this._drive(async () => {
-      while (this._pending && !this.dead) {
-        const d = Math.sign(this._pending);
-        this._pending -= d;
-        await this._one(d);
+      await this._still();
+      const from = this.frameNo;
+      let want = 0;
+      while ((this._pending || this._jumping) && !this.dead) {
+        if (this._jumping) {
+          const n = this._jumping;
+          this._jumping = 0;
+          want += n;
+          await this._ask(this.ct + n * (this._ctFrame ?? this.dt));
+        } else {
+          const d = Math.sign(this._pending);
+          this._pending -= d;
+          want += d;
+          await this._one(d);
+        }
         this._emit();
       }
+      this._report(want, from);
       this._busy = false;
     });
+  }
+
+  // What the gesture asked for against what the reading says it got. Kept apart
+  // from the walk itself: a walk answers on a *change*, and cannot know how many
+  // frames that change spanned — only the numbering can say, and only once the
+  // cadence has been measured. Absent that, no claim is made at all.
+  _report(want, from) {
+    const got = this.frameNo;
+    this.last = (from === null || got === null) ? null : { want, got: got - from };
+    this._emit();
   }
 
   // A wide jump: approximate by nature, and that is fine — it is for crossing
@@ -373,5 +520,14 @@ export class VideoClock {
   //
   // It multiplies `_ctFrame`, the distance *measured once*, never the adaptive
   // probe hint — which shrinks with use and would quietly shorten every jump.
-  jump(n) { return this.seek(this.ct + n * (this._ctFrame ?? this.dt)); }
+  //
+  // Unlike a step, repeats *are* merged: a jump is coarse by construction, so
+  // two of them are one twice as long, where merging two steps would lose the
+  // precision they exist for. It stands still first for the same reason a step
+  // does — `ct` is a request cursor, and a jump measured from a stale one lands
+  // ten frames away from where the picture was, not from where it is.
+  jump(n) {
+    this._jumping += n;
+    return this._run();
+  }
 }

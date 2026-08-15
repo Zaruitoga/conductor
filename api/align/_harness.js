@@ -62,6 +62,39 @@ export async function run(mod = "./video.js") {
     }
     requestVideoFrameCallback(cb) { this._cbs.push(cb); return this._cbs.length; }
     cancelVideoFrameCallback() {}
+    // Playback, modelled for what it does to a *reader*: it advances the element
+    // without anyone seeking, and it presents a frame every vsync. Both are what
+    // a step has to survive — the first leaves the request cursor stale, the
+    // second makes "has the reading changed?" true before any probe has run.
+    // Bounded, and that bound is not a detail: a version that never comes to a
+    // standstill leaves this running, and an unbounded presentation loop does
+    // not fail the case — it hangs every case after it, which reads as the bench
+    // being broken rather than the code.
+    play(ticks = 400) {
+      if (!this.paused) return Promise.resolve();
+      this.paused = false;
+      let n = 0;
+      const tick = () => {
+        if (this.paused || ++n > ticks) { this.paused = true; return; }
+        this._ct += 1 / 30;
+        this._present(this.pts.filter((p) => p <= this._ct + 1e-9).pop() ?? this.pts[0]);
+        soon(tick, 16);
+      };
+      soon(tick, 16);
+      return Promise.resolve();
+    }
+    // `pause()` stops the element advancing; it does not empty the compositor.
+    // One or two frames already handed over still get presented afterwards —
+    // and the page pauses *before* it steps, so this is the window a step
+    // actually opens in, not a rare race.
+    pause(inflight = 2) {
+      if (this.paused) return;
+      this.paused = true;
+      for (let i = 1; i <= inflight; i++) {
+        const p = this.pts.filter((x) => x <= this._ct + i / 30 + 1e-9).pop();
+        soon(() => this._present(p ?? this.pts[0]), i * 16);
+      }
+    }
     addEventListener(t, f) { (this._ls[t] ||= []).push(f); }
     removeEventListener(t, f) { this._ls[t] = (this._ls[t] || []).filter((g) => g !== f); }
     _fire(t) { for (const f of [...(this._ls[t] || [])]) f(); }
@@ -143,6 +176,54 @@ export async function run(mod = "./video.js") {
     s.dispose();
   }
 
+  // A step starts from where the picture *is*, not from the last seek.
+  //
+  // `ct` is the request cursor and only `_ask` writes it, so anything that moves
+  // the element on its own leaves it naming an instant that may be seconds
+  // behind. Reported from the page: entering detail mode with the arrows sends
+  // the video back to wherever it was last seeked.
+  async function resync(name, pts, opt) {
+    const v = new FakeVideo(pts, opt);
+    const s = new VideoClock(v);
+    s.rvfc = true;
+    await s.measure(4);
+    await s.seek(pts[5] + 0.005);
+    const stale = s.media;
+    v.currentTime = pts[20] + 0.005;         // the element moves without us
+    await new Promise((r) => soon(r, 40));
+    await s.step(1);
+    const want = pts[21] + v.off;
+    log.push({ cas: name, ok: Math.abs(s.media - want) < 1e-6, seeks: v.seeks,
+               lu: [+s.media.toFixed(4)],
+               attendu: [+want.toFixed(4), `et surtout pas ${(stale + 1 / 30).toFixed(4)}`] });
+    s.dispose();
+  }
+
+  // …and it does not begin until the element has come to a standstill.
+  //
+  // The sequence is `enterDetail()`'s, to the letter: pause, then step, with no
+  // wait in between. `pause()` stops the element advancing but leaves one or two
+  // frames in the compositor, and those land *during* the walk — where they
+  // satisfy "has the reading changed?" without any probe having moved anything.
+  // Reported from the page as a PTS jumping by 0.066, two frames, now and then.
+  async function stillness(name, pts, opt, vsyncs = 6) {
+    const v = new FakeVideo(pts, opt);
+    const s = new VideoClock(v);
+    s.rvfc = true;
+    await s.measure(4);
+    await s.seek(pts[3] + 0.005);
+    await v.play();
+    await new Promise((r) => soon(r, 16 * vsyncs));
+    v.pause();                                // ← what pressing → does first
+    await s.step(1);                          // ← and immediately after
+    const ok = !!s.last && s.last.got === 1 && s.last.want === 1;
+    log.push({ cas: name, ok, seeks: v.seeks,
+               lu: [s.last ? `${s.last.got} frame(s)` : "pas de numérotation"],
+               attendu: ["1 frame"] });
+    v.pause();                                // a version that never stood still leaves it playing
+    s.dispose();
+  }
+
   const cfr = grid(40, 1 / 30);
   const vfr = grid(40, 1 / 30, 0.004);     // ±4 ms  : max/min ≈ 1.3 ⇒ tight
   const wild = grid(40, 1 / 30, 0.012);    // ±12 ms : max/min ≈ 2.1 ⇒ a ramp
@@ -171,6 +252,11 @@ export async function run(mod = "./video.js") {
   await jumped("⇧ = dix frames, sans pas préalable", cfr, {}, 0);
   await jumped("⇧ = dix frames après 4 allers-retours ←/→", cfr, {}, 4);
   await jumped("⇧ = dix frames après 4 allers-retours, décalé de −0,05 s", cfr, { off: -0.05 }, 4);
+
+  await resync("le pas repart de l'image, pas du dernier seek", cfr, {});
+  await resync("… décalé de −0,05 s", cfr, { off: -0.05 });
+  await stillness("un pas depuis la lecture fait une frame, pas deux", cfr, {});
+  await stillness("… décalé de −0,05 s", cfr, { off: -0.05 });
 
   window.requestAnimationFrame = raf;
   const bad = log.filter((r) => !r.ok).length;
