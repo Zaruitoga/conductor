@@ -2,15 +2,23 @@
 // Notes are edited inline (the old panel used window.prompt). A row being
 // edited is marked so the 4 Hz refresh leaves its textarea alone.
 
-import { $, h, setText, setHidden, keyed, takeDuration, fmtCount } from "../dom.js";
+import { $, h, setText, setAttr, setHidden, keyed, takeDuration, fmtCount } from "../dom.js";
 import { on, state } from "../store.js";
 import { api, toast } from "../api.js";
 import { refreshSessions } from "./playback.js";
 
 function createRow() {
+  // The alignment page is reachable from here and from the viz's take selector:
+  // it is a per-take job, so the take's own row is where one goes looking for
+  // it. A plain <a> rather than a button — it is a link to a page, it should
+  // open in a new tab on ⌘-click like any other.
   const row = h("div.slot.slot--wide.take", { dataset: { editing: "0" } },
     h("div.slot__name"),
-    h("button.btn.btn--icon", { type: "button" }, "✎ notes"),
+    h("div.row",
+      { style: "gap:6px" },
+      h("a.btn.btn--icon", { title: "Aligner ce take sur sa vidéo" }, "⧉ aligner"),
+      h("button.btn.btn--icon", { type: "button" }, "✎ notes"),
+    ),
   );
 
   const editor = h("div.take__notes-editor", null,
@@ -25,7 +33,8 @@ function createRow() {
   editor.style.gridColumn = "1 / -1";
   row.append(editor);
 
-  const [name, editBtn] = row.children;
+  const [name, actions] = row.children;
+  const [alignLink, editBtn] = actions.children;
   const textarea = editor.firstChild;
   const [saveBtn, cancelBtn] = editor.lastChild.children;
 
@@ -62,6 +71,7 @@ function createRow() {
   };
 
   row._name = name;
+  row._alignLink = alignLink;
   return row;
 }
 
@@ -81,6 +91,12 @@ function updateRow(row, ctx) {
   setText(row._name,
     `${t.name} — ${takeDuration(t)} s · ${fmtCount(t.packet_count)} paq.`
     + (extras ? ` · ${extras}` : ""));
+
+  // The query is what /align/ reads at boot and then keeps true itself, so this
+  // link stays a valid address after the page has been used.
+  setAttr(row._alignLink, "href",
+    `/align/?session=${encodeURIComponent(ctx.session)}`
+    + `&take=${encodeURIComponent(t.name)}`);
 }
 
 export function initTakes() {

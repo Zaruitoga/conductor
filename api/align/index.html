@@ -8,10 +8,10 @@
 </head>
 <body>
   <!-- Une seule disposition, stable du début à la fin : sélecteur · vidéo (la
-       plus grande surface) · réglette en temps vidéo · courbe |ω| brute. Une
-       timeline en temps de take a été construite puis retirée dans la maquette
-       #9 — elle ne disait rien que la réglette ne dise déjà. Ne pas la
-       réintroduire. La barre de confirmation viendra avec #27. -->
+       plus grande surface) · réglette en temps vidéo · barre de confirmation ·
+       courbe |ω| brute. Une timeline en temps de take a été construite puis
+       retirée dans la maquette #9 — elle ne disait rien que la réglette ne dise
+       déjà. Ne pas la réintroduire. -->
   <div id="app">
 
     <header>
@@ -21,26 +21,52 @@
       <span id="badge" class="pill"></span>
       <span id="video-line" class="dim"></span>
       <span id="keys" class="dim keys">
-        <kbd>↑</kbd><kbd>↓</kbd> candidat · <kbd>Espace</kbd> lecture ·
-        molette zoom · glisser déplacer · double-clic tout voir
+        <kbd>←</kbd><kbd>→</kbd> frame · <kbd>⇧</kbd> ×10 · <kbd>↑</kbd><kbd>↓</kbd> candidat ·
+        <kbd>E</kbd> épingler · <kbd>B</kbd> flasher · <kbd>⏎</kbd> confirmer ·
+        <kbd>Espace</kbd> lecture · <kbd>Échap</kbd> sortir
       </span>
     </header>
 
     <!-- La vidéo garde la plus grande surface : le début d'un mouvement fait 3 px. -->
     <main id="stage">
       <video id="v" playsinline preload="auto"></video>
+      <!-- Le comparateur est à bascule, jamais une bande de frames : cinq
+           vignettes côte à côte font 1 px de déplacement. L'épinglée est
+           capturée dans un canvas — un <video> n'affiche qu'une frame — et se
+           substitue à l'image courante tant que B est maintenu. -->
+      <canvas id="pinned" hidden></canvas>
       <div id="stage-msg" hidden></div>
       <div id="hud" hidden>
         <span id="hud-time" class="mono big">—</span>
+        <span id="hud-mode" class="chip"></span>
+        <span id="hud-cadence" class="chip"></span>
         <span id="hud-src" class="chip"></span>
+        <span id="blink-tag" class="chip on" hidden>épinglée</span>
       </div>
     </main>
 
-    <!-- La seule réglette de la page : temps vidéo. -->
+    <!-- La seule réglette de la page : temps vidéo, et elle atteint tout le
+         take — une erreur de 500 ms est invisible à l'ancre et criante trente
+         secondes plus tard pendant une roulade. -->
     <div class="strip">
       <button id="play" disabled>▶</button>
-      <div class="track"><input id="scrub" type="range" min="0" max="1" step="0.001" value="0" disabled></div>
+      <div class="track">
+        <input id="scrub" type="range" min="0" max="1" step="0.001" value="0" disabled>
+        <span id="scrub-mark" hidden></span>
+      </div>
       <span id="dur" class="mono dim">—</span>
+    </div>
+
+    <!-- La confirmation est un ÉTAT, pas un événement passé : une fois posées,
+         les deux ancres affichent ce qui est enregistré et ne défilent plus. -->
+    <div class="confirm">
+      <span id="lock" class="lock" hidden>🔒 posé</span>
+      <span class="dim">ancre inertielle</span> <b id="a-imu" class="mono">—</b>
+      <span class="dim">· ancre vidéo</span> <b id="a-vid" class="mono">—</b>
+      <span class="dim">· Δ</span> <b id="a-delta" class="mono">—</b>
+      <span id="a-note" class="dim"></span>
+      <span id="pin-state" class="dim pin"></span>
+      <button id="ok" disabled>Confirmer l'alignement</button>
     </div>
 
     <!-- Courbe |ω| brute en temps de take, réduite en min/max par colonne de

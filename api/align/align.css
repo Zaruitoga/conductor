@@ -27,7 +27,7 @@ html, body {
   position: absolute;
   inset: 0;
   display: grid;
-  grid-template-rows: auto 1fr auto auto;
+  grid-template-rows: auto 1fr auto auto auto;
 }
 
 /* ── En-tête ──────────────────────────────────────────────────────────────── */
@@ -54,6 +54,15 @@ header .keys { flex: 1; min-width: 220px; font-size: 11px; line-height: 1.3; tex
 }
 #stage.empty video { display: none; }
 
+/* L'épinglée se substitue à l'image courante — même cadrage, sinon la
+   comparaison mesurerait la mise en page. */
+#pinned {
+  position: absolute; inset: 0; z-index: 2;
+  width: 100%; height: 100%;
+  object-fit: contain; background: #000;
+}
+#pinned[hidden] { display: none; }
+
 #stage-msg { max-width: 64ch; }
 #stage-msg[hidden] { display: none; }
 
@@ -75,6 +84,29 @@ header .keys { flex: 1; min-width: 220px; font-size: 11px; line-height: 1.3; tex
 .strip #scrub { position: absolute; inset: 0; width: 100%; margin: 0; }
 .strip #play { width: 38px; text-align: center; }
 .strip #dur { white-space: nowrap; font-size: 12px; }
+
+/* L'ancre vidéo, sur la réglette avec laquelle elle a été posée. */
+#scrub-mark {
+  position: absolute; top: 2px; bottom: 2px; width: 2px;
+  background: var(--ok); pointer-events: none;
+  transform: translateX(-1px);
+}
+#scrub-mark[hidden] { display: none; }
+
+/* ── Confirmation ─────────────────────────────────────────────────────────── */
+.confirm {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding: 7px 12px;
+  background: var(--card);
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+}
+.confirm .lock { color: var(--ok); font-weight: 600; white-space: nowrap; }
+.confirm .lock[hidden] { display: none; }
+.confirm b { white-space: nowrap; }
+.confirm .pin { margin-left: auto; text-align: right; }
+.confirm #ok { white-space: nowrap; }
+.confirm #a-note { font-size: 11.5px; }
 
 /* ── Courbe + candidats ───────────────────────────────────────────────────── */
 .curvebox { border-top: 1px solid var(--border); background: var(--card); }
@@ -108,6 +140,8 @@ header .keys { flex: 1; min-width: 220px; font-size: 11px; line-height: 1.3; tex
   border: 1px solid var(--border); border-radius: 99px;
   padding: 1px 9px; font-size: 11px; color: var(--muted);
 }
+.chip.on { border-color: var(--accent); color: var(--accent); }
+.chip[hidden] { display: none; }
 .pill {
   border: 1px solid var(--border); border-radius: 99px;
   padding: 1px 9px; font-size: 11px; color: var(--muted); white-space: nowrap;

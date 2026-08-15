@@ -202,8 +202,8 @@ export class CurveView {
 
   draw(state) {
     if (state) this._render = state;
-    const { candidates = [], selected = -1, anchor = null, playhead = null } =
-      this._render ?? {};
+    const { candidates = [], selected = -1, anchor = null, anchorOn = false,
+            playhead = null } = this._render ?? {};
 
     const dpr = Math.min(devicePixelRatio || 1, 2);
     const w = this._w(), h = this.cv.clientHeight || 1;
@@ -256,15 +256,20 @@ export class CurveView {
     // It usually sits exactly on one of them — a vertical line alone would then
     // be hidden by it, and "which one was retained" is the whole question here,
     // so the flag is what actually answers it.
+    //
+    // `anchorOn` says the anchor is *also* the choice currently held, which
+    // happens when it matches no proposition. It keeps its own colour — amber is
+    // its identity, stored rather than proposed — and takes the weight that
+    // marks a selection everywhere else on this canvas.
     if (anchor != null && anchor >= this.t0 && anchor <= this.t1) {
       const x = X(anchor);
-      this._marker(g, x, h, COL.anchor, 2, false);
+      this._marker(g, x, h, COL.anchor, anchorOn ? 3 : 2, false);
       g.fillStyle = COL.anchor;
       g.beginPath();
       g.moveTo(x - 5, h); g.lineTo(x + 5, h); g.lineTo(x, h - 7);
       g.fill();
       g.font = "600 10px system-ui";
-      g.fillText("ancre", Math.min(x + 7, w - 34), h - 16);
+      g.fillText(anchorOn ? "ancre ✓" : "ancre", Math.min(x + 7, w - 44), h - 16);
     }
 
     candidates.forEach((c, i) => {
