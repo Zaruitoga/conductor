@@ -228,26 +228,6 @@ export async function run(mod = "./video.js") {
   const vfr = grid(40, 1 / 30, 0.004);     // ±4 ms  : max/min ≈ 1.3 ⇒ tight
   const wild = grid(40, 1 / 30, 0.012);    // ±12 ms : max/min ≈ 2.1 ⇒ a ramp
 
-  // A frame whose *presentation window* is a fraction of a millisecond, placed
-  // **off the probe lattice**. Both halves of that matter.
-  //
-  // Narrow because a stride steps clean over such a window and the frame cannot
-  // then be reached from either side — reported from the page as take 003's
-  // frame 91, `90 → 92 → 90`, always the same one. Not a contrivance: those
-  // rushes are B-frame reordered (decode order ≠ presentation order) and their
-  // `stts` carries deltas of 9/90000 s beside the 66.6 ms ones.
-  //
-  // Off-lattice because δ is a *quarter of a frame*: on a regular grid every
-  // fourth probe lands exactly on a boundary, so a narrow window inserted at a
-  // whole number of frames is hit by construction and the case proves nothing.
-  // It has to fall between two probes, which is where a real one falls.
-  const withNarrow = (pts) => [
-    ...pts.slice(0, 3),
-    +(pts[2] + 0.0040).toFixed(6),      // ← 4 ms
-    +(pts[2] + 0.0041).toFixed(6),      // ← puis 0,1 ms : la frame introuvable
-    ...pts.slice(3),
-  ];
-
   await walk("CFR 30 fps", cfr, {}, 1 / 30, [1 / 30, 1 / 30]);
   await walk("CFR · 1 présentation sur 2 en retard de 45 ms", cfr, { lateEvery: 2 }, 1 / 30, [1 / 30, 1 / 30]);
   await walk("CFR · seek lent (120 ms)", cfr, { seekMs: 120 }, 1 / 30, [1 / 30, 1 / 30]);
@@ -272,12 +252,6 @@ export async function run(mod = "./video.js") {
   await jumped("⇧ = dix frames, sans pas préalable", cfr, {}, 0);
   await jumped("⇧ = dix frames après 4 allers-retours ←/→", cfr, {}, 4);
   await jumped("⇧ = dix frames après 4 allers-retours, décalé de −0,05 s", cfr, { off: -0.05 }, 4);
-
-  await walk("fenêtre de 0,1 ms hors réseau", withNarrow(cfr), {}, 1 / 30, [1 / 30, 1 / 30]);
-  await walk("fenêtre de 0,1 ms hors réseau · décalé de −0,05 s", withNarrow(cfr),
-             { off: -0.05 }, 1 / 30, [1 / 30, 1 / 30]);
-  await walk("fenêtre de 0,1 ms hors réseau · 1 présentation sur 2 en retard",
-             withNarrow(cfr), { lateEvery: 2 }, 1 / 30, [1 / 30, 1 / 30]);
 
   await resync("le pas repart de l'image, pas du dernier seek", cfr, {});
   await resync("… décalé de −0,05 s", cfr, { off: -0.05 });

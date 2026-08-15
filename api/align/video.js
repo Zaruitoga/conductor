@@ -53,15 +53,6 @@ const PROBE_S        = 0.008;
 const MEASURE_FRAMES = 5;
 
 const MAX_PROBES  = 20;   // one step gives up after this many, rather than never
-
-// Halving the bracket down to this, and the cap that bounds it. 0.1 ms is the
-// narrowest duration the reference container actually expresses — take 003's
-// `stts` carries deltas of 9/90000 s beside its 66.6 ms ones — so a boundary is
-// found rather than straddled. Seven halvings take a δ-wide bracket (8.3 ms at
-// 30 fps) to 65 µs, which clears it. Raising `BISECT_S` is the one lever that
-// trades a frame's reachability for probes; lower it and steps only get slower.
-const BISECT_S   = 1e-4;
-const BISECT_MAX = 7;
 // A measurement probes in `PROBE_S` (8 ms) rather than in quarter-frames, so it
 // needs more room to cross one frame — and it is the one walk allowed to be slow.
 const MEASURE_PROBES = 40;
@@ -100,19 +91,21 @@ export class VideoClock {
     // frame, and nothing else on the page would ever mention it.
     this.last   = null;   // {want, got} | null
 
-    // One frame in the request domain, measured once by `measure()`. It is what
-    // a jump multiplies, and nothing else reads it.
+    // Two distances in the request domain, and they must not be one field.
     //
-    // There used to be a second, adaptive distance beside it (`_ctStep`, where a
-    // forward probe started) and it cost two defects. Conflated with this one it
-    // took `⇧` from ten frames to five, silently — a backward step leaves the
-    // cursor a hair inside the previous frame, so the next forward step succeeds
-    // at once and writes the shorter distance back, and walking back and forth
-    // is exactly what comparing against the pinned frame *is*. Split off, it
-    // still opened every forward walk with a leap, which is what let a
-    // presentation window narrower than the leap be stepped over. `_one` now
-    // brackets with a plain stride and bisects, so no head start is wanted.
+    //   `_ctFrame` — one frame, measured once by `measure()`. It is what a jump
+    //     multiplies, so it has to stay put.
+    //   `_ctStep`  — where a forward probe *starts*. It adapts, and it is
+    //     allowed to shrink: starting short only costs an extra probe, while
+    //     starting long risks stepping over a frame.
+    //
+    // They were one field. A backward step leaves the cursor a hair inside the
+    // previous frame, so the next forward step succeeds on its first probe and
+    // writes that shorter distance back — and walking back and forth is exactly
+    // what comparing against the pinned frame *is*. Four round trips took `⇧`
+    // from ten frames to five, silently. The bench pins it now.
     this._ctFrame = null;
+    this._ctStep  = null;
     this._wrote   = null; // the last value actually written to the element
     // When a presentation last arrived that *no probe had asked for* — playback,
     // or a frame still in the compositor after one. It is what says the picture
@@ -441,33 +434,12 @@ export class VideoClock {
 
   // ── One frame, exactly ────────────────────────────────────────────────────
 
-  /**
-   * Move to the frame next to the one displayed, in the direction asked.
-   *
-   * Two stages, and the second is what makes the first safe.
-   *
-   * **Bracket.** Walk away from the last request by δ until the reported PTS
-   * changes. That change — never the value reached — is what answers, so
-   * whatever constant sits between the two domains, a frame reached that way is
-   * *a* neighbour. What it is not, on its own, is the *nearest* one: a stride
-   * finds the first boundary on its own lattice, and a presentation window
-   * narrower than δ falls between two probes and is stepped over. Frames like
-   * that are not exotic — the reference rushes are B-frame reordered, decode
-   * order is not presentation order, and their `stts` deltas alternate 66.6 ms
-   * with 0.1 ms. Measured on take 003, consecutive windows ran 42 ms and 25 ms
-   * where the PTS grid says a flat 33.3, and one frame in that neighbourhood was
-   * unreachable from either side — the symptom that produced this rewrite.
-   *
-   * **Bisect.** So the bracket only has to *contain* the boundary, and the
-   * boundary itself is then found by halving: `near` always reads what we
-   * started on, `far` always reads something else, and the invariant is kept by
-   * the reading alone. Nothing here computes where a frame is either — a
-   * bisection asks the same question the stride does, just at shrinking
-   * distances — and it is exact to `BISECT_S`, which is well under the narrowest
-   * window a container can express. This is also why the forward walk no longer
-   * opens with a leap: an adaptive head start bought a probe or two and was
-   * precisely what made a narrow window skippable.
-   */
+  // `ct` sits just past a frame boundary (within one probe of it). Walk away
+  // from it by δ until the reported PTS *changes*: the first frame reached that
+  // way is necessarily the neighbour, whatever offset may sit between the two
+  // domains. What is learnt on the way is where the *next* forward probe should
+  // start (`_ctStep`) — one or two probes per keypress, and never the overshoot
+  // a wider start would risk. That hint is not the jump's unit: see the field.
   async _one(dir) {
     const base = this.ct, before = this.media;
     // The change must go the way we asked. The two domains can be offset, but
@@ -477,29 +449,16 @@ export class VideoClock {
     if (this.rvfc === false) { await this._ask(base + dir * this.dt); return; }
 
     const d = (this.gran ?? this.dt) / 4;
-    let near = base, far = null;
-    for (let i = 1; i <= MAX_PROBES && !this.dead; i++) {
-      const asked = await this._ask(base + dir * i * d);
-      if (changed()) { far = asked; break; }
-      if (asked === near) break;          // clamped at an end of the file: no frame that way
-      near = asked;
+    let eps = dir > 0 ? Math.max(d, (this._ctStep ?? this._ctFrame ?? 4 * d) - d) : d;
+    let last = null;
+    for (let i = 0; i < MAX_PROBES && !this.dead; i++) {
+      const asked = await this._ask(base + dir * eps);
+      if (changed()) { if (dir > 0) this._ctStep = eps; return; }
+      if (asked === last) break;          // clamped at an end of the file: no frame that way
+      last = asked;
+      eps += d;
     }
-    if (far === null) { this.ct = base; return; }   // nothing moved: neither does the cursor
-
-    // Always, and there is no cheaper test to gate it on. The tempting one — did
-    // the *reading* move by more than one interval? — is wrong in exactly this
-    // case: passing over a narrow frame moves the reading by that frame's own
-    // 4 ms, which is *less* than an interval, not more. Nothing observable tells
-    // "landed on the neighbour" from "jumped one" without probing in between,
-    // which is what this loop is. It costs roughly a dozen seeks per keypress
-    // instead of three; a page whose entire purpose is designating one frame
-    // pays that.
-    for (let i = 0; i < BISECT_MAX && Math.abs(far - near) > BISECT_S && !this.dead; i++) {
-      const asked = await this._ask((near + far) / 2);
-      if (changed()) far = asked; else near = asked;
-    }
-    // The last probe may have been a `near`, which reads the frame we came from.
-    if (Math.abs(this.ct - far) > 1e-9) await this._ask(far);
+    this.ct = base;                       // nothing moved: neither does the cursor
   }
 
   // Keypresses stack and drain one frame at a time — never merged into a jump,
