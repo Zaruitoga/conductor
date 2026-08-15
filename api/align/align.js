@@ -114,6 +114,24 @@ async function selectSession(name) {
   await selectTake(takes()[0]?.name ?? null);
 }
 
+// The URL follows the take instead of merely naming it at boot. The query is an
+// entry point — #27 links here from the panel's take list and from the viz's
+// selector — and an address that stops being true after the first choice cannot
+// be copied or reloaded onto what is on screen.
+//
+// `replaceState`, never `pushState`: Back must return where the page was opened
+// from, which is what the header's ← does too. Walking eight takes and needing
+// eight presses to leave is the wrong gesture for a post-production tool.
+//
+// It runs on the resolved take, not on the requested one, so a query naming a
+// take that no longer exists is normalised to the one actually displayed.
+function syncUrl() {
+  if (!S.session) return;
+  const q = new URLSearchParams({ session: S.session });
+  if (S.take) q.set("take", S.take.name);
+  history.replaceState(null, "", `${location.pathname}?${q}`);
+}
+
 async function selectTake(name) {
   const token = ++S.token;
   S.clock?.dispose();
@@ -130,6 +148,7 @@ async function selectTake(name) {
   video.load();
   curve.setTake([], 1);
   fillSelects();
+  syncUrl();
   renderChrome();
   renderNow();
   if (!S.take) return;
@@ -493,8 +512,8 @@ function setProp(el, k, v) { if (el[k] !== v) el[k] = v; }
   $("take").onchange = (e) => { e.target.blur(); selectTake(e.target.value); };
   addEventListener("resize", () => curve.draw());
 
-  // The URL names a take when the page is opened from elsewhere; changing take
-  // afterwards deliberately does not rewrite it.
+  // The URL names a take when the page is opened from elsewhere, and `syncUrl`
+  // keeps it true from there on.
   const q = new URLSearchParams(location.search);
   try {
     await loadTree();
