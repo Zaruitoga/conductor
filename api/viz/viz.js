@@ -8,6 +8,7 @@
 
 import * as THREE from './vendor/three.module.js';
 import { OrbitControls } from './vendor/OrbitControls.js';
+import { mountVideo } from './video.js';
 
 const $ = (id) => document.getElementById(id);
 const RECONNECT_MS = 1000;
@@ -115,6 +116,12 @@ scene.add(grid);
 const qFix = new THREE.Quaternion()
   .setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
 
+// ── The take's video, slave to the replay (video.js + sync-clock.js) ────────
+// Three hooks, called below where the information already passes: a frame, a
+// reset, and the playback state. Which take it shows is decided here, because
+// the session tree — with both anchors and the stored `video_file` — lives here.
+const takeVideo = mountVideo($("stage"));
+
 // ── Latest sample (only the newest one is ever drawn) ───────────────────────
 const sampleQ = new THREE.Quaternion();
 const sampleP = new THREE.Vector3();
@@ -179,10 +186,14 @@ function setDot(id, cls, textId, text) {
 // ── Channel 1: packet stream (wheel motion) ─────────────────────────────────
 const wsProto = location.protocol === "https:" ? "wss" : "ws";
 
-// ?types=frame — the wheel only needs the model's frames, and the server would
-// otherwise also send gyro/game_rv/super_0/heartbeat: several times the messages
-// to parse for nothing.
-connect(`${wsProto}://${location.hostname}:${cfg.ws_port}/?types=frame`, {
+// ?types=frame,meta — the wheel only needs the model's frames, and the server
+// would otherwise also send gyro/game_rv/super_0/heartbeat: several times the
+// messages to parse for nothing. `meta` is added for the reset alone: it is the
+// instant the replay's timeline changes direction (a pass starting, a loop
+// turning over, a jump landing) and the one moment the video has to move with it
+// rather than wait for a drift to build. It is rare by construction, so it costs
+// nothing to carry.
+connect(`${wsProto}://${location.hostname}:${cfg.ws_port}/?types=frame,meta`, {
   onOpen: () => setDot("stream-dot", "ok", "stream-text",
                        `flux 3D — port ${cfg.ws_port}`),
   onClose: () => {
@@ -193,8 +204,13 @@ connect(`${wsProto}://${location.hostname}:${cfg.ws_port}/?types=frame`, {
   onMessage: (ev) => {
     let d;
     try { d = JSON.parse(ev.data); } catch { return; }
+    if (d.type === "meta") { takeVideo.onMeta(d); return; }
     if (d.type !== "frame") return;
     packetCount++;
+    // The video is slave to this `t` and never to `playback.elapsed_s`: the
+    // snapshot is 4 Hz rounded to a tenth, which is 72° of wheel at two turns a
+    // second.
+    takeVideo.onFrame(d);
 
     // `pose` is the geometric state, always present in a frame — as opposed to
     // `signals`, whose contents depend on how the ESP is configured. Position
@@ -264,9 +280,18 @@ function renderPlayback(p) {
   $("pb-pause").disabled = !p.active;
   $("pb-stop").disabled = !p.active;
   playbackPaused = !!p.paused;
+  playbackActive = !!p.active;
+
+  // State, speed and pause — never the time. A replay owns the picture while it
+  // runs; the selector only decides what is preloaded in between, so that the
+  // first second of a replay is not played against an empty element.
+  takeVideo.onPlayback(p);
+  if (p.active && p.session && p.take) showTake(p.session, p.take);
+  else showTake($("pb-session").value, $("pb-take").value);
 }
 
 let playbackPaused = false;
+let playbackActive = false;
 
 // ── HUD (throttled: the stream runs far faster than the eye) ────────────────
 let lastTick = performance.now();
@@ -361,7 +386,8 @@ function updateTakeMeta() {
   const session = sessionTree.find((s) => s.name === $("pb-session").value);
   const t = session && session.takes.find((x) => x.name === $("pb-take").value);
   $("pb-take-meta").textContent = t
-    ? [t.title, t.performer, `${t.packet_count} paquets`].filter(Boolean).join(" · ")
+    ? [t.title, t.performer, `${t.packet_count} paquets`, alignmentLabel(t)]
+        .filter(Boolean).join(" · ")
     : "";
   // The query is what /align/ reads at boot and then keeps true itself, so this
   // link stays a valid address after that page has been used.
@@ -369,6 +395,43 @@ function updateTakeMeta() {
   link.href = t
     ? `/align/?session=${encodeURIComponent(session.name)}&take=${encodeURIComponent(t.name)}`
     : "/align/";
+  // A replay owns the picture while it runs — picking another take in the list
+  // must not yank the video off the take being played.
+  if (!playbackActive) showTake($("pb-session").value, $("pb-take").value);
+}
+
+// Derived from stored data alone, exactly as /align/'s pill is: no `video_file`
+// ⇒ no video; anchors absent ⇒ not aligned; both ⇒ aligned. Nothing here is a
+// detection verdict, which ADR 0001 excludes.
+function alignmentLabel(t) {
+  if (!t.video_file) return "sans vidéo";
+  return Number.isFinite(t.onset_imu_s) && Number.isFinite(t.onset_video_s)
+    ? "aligné" : "non aligné";
+}
+
+// What the video shows. The tree is the only place both anchors and the stored
+// `video_file` are known, so the choice is made here and `video.js` is handed a
+// take rather than left to look one up.
+let missingKey = null;
+
+function showTake(session, take) {
+  const s = sessionTree.find((x) => x.name === session);
+  const t = s && s.takes.find((x) => x.name === take);
+  if (!t) {
+    // A take recorded since this tree was loaded — a replay can perfectly well
+    // name one. Refresh once per unknown take, not on every 4 Hz snapshot.
+    const k = `${session}/${take}`;
+    if (session && take && k !== missingKey) { missingKey = k; refreshSessions(); }
+    takeVideo.setTake(null);
+    return;
+  }
+  missingKey = null;
+  takeVideo.setTake({
+    session, take,
+    video_file:    t.video_file,
+    onset_imu_s:   t.onset_imu_s,
+    onset_video_s: t.onset_video_s,
+  });
 }
 
 $("pb-refresh").onclick = refreshSessions;
