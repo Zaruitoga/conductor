@@ -119,8 +119,9 @@ export function record({ quietMs = 300 } = {}) {
   };
 }
 
-export async function run(mod = "./sync-clock.js") {
+export async function run(mod = "./sync-clock.js", sweepMod = "./sweep.js") {
   const { VideoSyncClock } = await import(mod + "?h=" + Date.now());
+  const { PoseCursor } = await import(sweepMod + "?h=" + Date.now());
   const log = [];
 
   // ── Virtual wall clock ─────────────────────────────────────────────────────
@@ -323,6 +324,58 @@ export async function run(mod = "./sync-clock.js") {
 
   const ms = (x) => (x === null || x === undefined ? null : +(x * 1000).toFixed(1));
   const say = (cas, ok, lu, attendu) => log.push({ cas, ok, lu, attendu });
+
+  /**
+   * A pose track being computed, served the way the endpoint serves one.
+   *
+   * `limitS` is the take time the computation has reached and is *moved* by the
+   * cases: the interesting state is not a finished track but one whose limit is
+   * still walking forward under the cursor. `asked` records every URL, which is
+   * how "one request per chunk" is asserted at all — a cursor that refetched on
+   * every pointer event would behave identically to the eye and hammer the loop
+   * this page is careful not to saturate.
+   */
+  class FakeTrack {
+    constructor({ hz = 100, takeS = 60, limitS = 60, noPosition = false } = {}) {
+      this.hz = hz; this.takeS = takeS; this.limitS = limitS;
+      this.noPosition = noPosition;
+      this.asked = [];
+    }
+
+    fetch = async (url) => {
+      this.asked.push(url);
+      const q = new URLSearchParams(url.split("?")[1]);
+      const points = +(q.get("points") || 0);
+      const start  = q.has("start") ? +q.get("start") : 0;
+      const end    = q.has("end")   ? +q.get("end")   : this.limitS;
+      const cols   = { t: [], qw: [], qx: [], qy: [], qz: [], x: [], y: [], z: [] };
+      if (!points) {
+        for (let k = Math.ceil(start * this.hz); k / this.hz <= Math.min(end, this.limitS); k++) {
+          const t = k / this.hz;
+          cols.t.push(t);
+          cols.qw.push(1); cols.qx.push(0); cols.qy.push(0); cols.qz.push(t);
+          // A take recorded without a gyro has no horizontal position at all,
+          // and the endpoint says so with null — never with a zero.
+          cols.x.push(this.noPosition ? null : t);
+          cols.y.push(this.noPosition ? null : -t);
+          cols.z.push(1);
+        }
+      }
+      return {
+        status: this.limitS >= this.takeS ? "ready" : "computing",
+        records: Math.round(this.limitS * this.hz),
+        duration_s: this.limitS,
+        complete: this.limitS >= this.takeS,
+        geometry: { R_TORE: 1, r_TORE: 0.05,
+                    current: { R_TORE: 1, r_TORE: 0.05 }, matches: true },
+        error: null,
+        poses: cols,
+      };
+    };
+  }
+
+  // Everything the cursor does is a promise away; nothing here waits on time.
+  const settle = async (n = 6) => { for (let i = 0; i < n; i++) await null; };
 
   try {
     // ── The two domains ──────────────────────────────────────────────────────
@@ -551,6 +604,226 @@ export async function run(mod = "./sync-clock.js") {
           Math.abs(s.bias) < 0.05 && b.v.seeks === 1,
           { biais: ms(s.bias), rms: ms(s.rms), recalages: b.v.seeks },
           { biais: "|·| < 50 ms", recalages: 1 });
+    }
+
+    // ── Le balayage : la main, pas le replay (#29) ────────────────────────────
+    // Sweeping drives the same element from a cursor instead of from `frame.t`,
+    // and the conversion between the two domains is the same one — which is the
+    // point: a scrub that wrote the target as though it were a request would sit
+    // a fixed number of frames beside the mark, silently, exactly like the
+    // playing path before this bench existed.
+    {
+      const b = new Bench({ off: 0.5, duration: 60 });
+      await b.open(20, 22);            // t − 20 + 22 in the reading domain
+      b.clock.scrub(30);
+      b.clock.endScrub();
+      const want = 30 - 20 + 22 - b.clock.offset;
+      say("le curseur pose l'image, décalage de domaine converti",
+          Math.abs(b.v.currentTime - want) < 0.05 && b.v.paused,
+          { position: +b.v.currentTime.toFixed(3), en_pause: b.v.paused },
+          { position: +want.toFixed(3), en_pause: true });
+    }
+
+    // A measurement borrows the element for half a second — it seeks, it plays.
+    // A sweep is entitled to ask for one it had given up (the cursor stopped the
+    // element under it), so the measurement has to give the position back, or
+    // letting go would leave the picture at the probe's own second, seconds from
+    // where the hand stopped and looking exactly like a wrong alignment.
+    {
+      const b = new Bench({ off: 0.5, duration: 60 });
+      b.clock.setAlignment(20, 22);
+      b.clock.scrub(35);
+      b.clock.endScrub();
+      const posed = b.v.currentTime;
+      const measuring = b.clock.measureOffset();
+      await b._run(1.2, false);
+      const ok = await measuring;
+      say("une mesure du décalage rend l'image où elle l'a prise",
+          ok && Math.abs(b.v.currentTime - posed) < 1e-3 && b.v.paused,
+          { avant: +posed.toFixed(3), après: +b.v.currentTime.toFixed(3),
+            mesurée: ok },
+          { après: +posed.toFixed(3), mesurée: true });
+    }
+
+    // "Chercher n'est pas jouer" is a property of the element too: whatever the
+    // replay is doing, a hand on the cursor is the one driver until it lets go.
+    {
+      const b = new Bench({});
+      await b.open(20, 22);
+      b.play(1);
+      await b.run(1);
+      b.clock.scrub(40);
+      const posed = b.v.currentTime;
+      const seeks = b.v.seeks;
+      // The hand is still down: the replay was never stopped, so its frames and
+      // its 4 Hz snapshots keep arriving. Neither may touch the element.
+      await b.run(0.5);
+      const held = Math.abs(b.v.currentTime - posed) < 1e-9
+                   && b.v.seeks === seeks && b.v.paused;
+      b.clock.endScrub();
+      say("pendant le balayage, les frames du replay ne reprennent pas la main",
+          held,
+          { bougé_ms: ms(b.v.currentTime - posed), écritures: b.v.seeks - seeks,
+            en_pause: b.v.paused },
+          { bougé_ms: 0, écritures: 0, en_pause: true });
+    }
+
+    // A drag produces one request per pointer event — sixty a second — and each
+    // one is a decode restart. The debounce is the same wall-clock budget the
+    // resync obeys, and the *last* position asked for is honoured exactly, or
+    // the picture would stop a fraction of a second short of where the hand is.
+    {
+      const b = new Bench({});
+      await b.open(20, 22);
+      const before = b.v.seeks;
+      for (let i = 0; i < 60; i++) {
+        b.clock.scrub(30 + i * 0.1);
+        await b.run(0.5 / 60, 0);      // 0.5 s of wall for the whole drag
+      }
+      b.clock.endScrub();
+      const want = 30 + 59 * 0.1 - 20 + 22;
+      say("une main sur le curseur ne noie pas le décodeur, et finit juste",
+          b.v.seeks - before <= 8 && Math.abs(b.v.currentTime - want) < 0.02,
+          { écritures: b.v.seeks - before, requêtes: 60,
+            arrivée: +b.v.currentTime.toFixed(3) },
+          { écritures: "≤ 8 (0,5 s / 80 ms)", arrivée: +want.toFixed(3) });
+    }
+
+    // Out of range while sweeping is the ordinary case, not an edge one — 8.8 s
+    // of the reference take's 58.9 have no picture. Writing a bounded position
+    // would show a frame from elsewhere as though it were this instant's.
+    {
+      const b = new Bench({ duration: 60 });
+      await b.open(20, 5);             // the take starts long after the video
+      const before = b.v.seeks;
+      b.clock.scrub(2);                // → −13 s in the video
+      b.clock.endScrub();
+      const c = b.clock.stats;
+      say("balayage hors plage : rien n'est écrit, et la page le dit",
+          b.v.seeks === before && c.outOfRange && c.state === "avant la vidéo",
+          { écritures: b.v.seeks - before, état: c.state },
+          { écritures: 0, état: "avant la vidéo" });
+    }
+
+    // ── Le curseur sur la piste de pose (#29) ────────────────────────────────
+    // The pose under the cursor is *at or before* it, never the nearest: a pose
+    // is a point the wheel actually passed through, and rounding forward hands
+    // back a position it had not reached yet. Same rule as `read_pose_at`.
+    {
+      const track  = new FakeTrack({ hz: 100 });
+      const cursor = new PoseCursor({ fetchJson: track.fetch, pollMs: 1e9 });
+      cursor.open("s", "t");
+      cursor.poseAt(12.345);
+      await settle();
+      const p = cursor.poseAt(12.345);
+      say("le curseur rend la pose à ou avant l'instant",
+          !!p && Math.abs(p.t - 12.34) < 1e-9 && Math.abs(p.x - 12.34) < 1e-9,
+          { t: p && +p.t.toFixed(3) }, { t: 12.34 });
+    }
+
+    // A drag fires one of these per pointer event — fifty for the second below.
+    // Refetching a stretch already held would be invisible to the eye and would
+    // hammer the very loop this page takes care not to saturate. The chunk the
+    // hand is heading for has to be there *before* it arrives, or the picture
+    // stops at every boundary; the one behind, for the same reason, since a
+    // hand goes back as readily as forward.
+    {
+      const track  = new FakeTrack({ hz: 100 });
+      const cursor = new PoseCursor({ fetchJson: track.fetch, pollMs: 1e9 });
+      cursor.open("s", "t");
+      await settle();
+      const before = track.asked.length;
+      for (let t = 12; t < 13; t += 0.02) { cursor.poseAt(t); await settle(2); }
+      const forOneSecond = track.asked.length - before;   // 50 pointer events
+      for (let t = 17; t < 18.2; t += 0.02) { cursor.poseAt(t); await settle(2); }
+      const asked = track.asked.filter((u) => u.includes("start="));
+      const spans = new Set(asked.map((u) => u.match(/start=(\d+)/)[1]));
+      say("un tronçon n'est demandé qu'une fois, et le voisin avant d'y arriver",
+          asked.length === spans.size && forOneSecond <= 2 && spans.has("20"),
+          { requêtes: asked.length, tronçons: [...spans].sort().join(","),
+            pour_une_seconde: forOneSecond, gestes: 50 },
+          { requêtes: "= nombre de tronçons (3)", tronçons: "0,10,20",
+            pour_une_seconde: "≤ 2" });
+    }
+
+    // A take opened the moment it was recorded: the computation is behind the
+    // hand rather than ahead of it. The cursor stops at the limit — cleanly,
+    // since past it there is nothing to draw — and follows it forward when the
+    // computation catches up. Nothing here is asked for by hand: only the reply
+    // says where the limit is, so only a fresh reply can move it.
+    {
+      const track  = new FakeTrack({ takeS: 60, limitS: 20 });
+      const cursor = new PoseCursor({ fetchJson: track.fetch, pollMs: 1e9 });
+      cursor.open("s", "t");
+      await settle();
+      const stopped = cursor.clamp(45);
+      const partial = !cursor.complete && cursor.limitS === 20;
+      track.limitS = 60;                 // the computation gets there
+      // The limit has to move on the *poll* alone, before anything is asked for
+      // around the cursor: it is the one change no request of ours would reveal,
+      // and a hand parked past the limit makes no request at all.
+      await cursor.refresh();
+      await settle();
+      const followed = cursor.limitS === 60 && cursor.complete
+                       && cursor.clamp(45) === 45;
+      cursor.poseAt(45);
+      await settle();
+      const p = cursor.poseAt(45);
+      say("piste tronquée : le curseur s'arrête à la limite, puis la suit",
+          partial && stopped === 20 && followed && !!p && Math.abs(p.t - 45) < 1e-9,
+          { limite_avant: 20, curseur_borné: stopped, limite_après: cursor.limitS,
+            suivie_au_sondage: followed, pose_à_45: !!p },
+          { curseur_borné: 20, limite_après: 60, suivie_au_sondage: true,
+            pose_à_45: true });
+    }
+
+    // A wheel recorded without a gyro has no horizontal position at all. Null
+    // has to survive the whole way to the renderer: a zero there draws it
+    // sitting at the origin, which is a plausible, wrong fact.
+    {
+      const track  = new FakeTrack({ noPosition: true });
+      const cursor = new PoseCursor({ fetchJson: track.fetch, pollMs: 1e9 });
+      cursor.open("s", "t");
+      cursor.poseAt(5);
+      await settle();
+      const p = cursor.poseAt(5);
+      say("une position absente reste absente, jamais un zéro",
+          !!p && p.x === null && p.y === null && p.qw === 1,
+          { x: p && p.x, y: p && p.y }, { x: null, y: null });
+    }
+
+    // Sweeping a fifteen-minute take must not end with the whole track in
+    // memory — that is precisely what the chunking is for.
+    {
+      const track  = new FakeTrack({ takeS: 900, limitS: 900 });
+      const cursor = new PoseCursor({ fetchJson: track.fetch, keep: 4, pollMs: 1e9 });
+      cursor.open("s", "t");
+      for (let t = 0; t < 300; t += 5) { cursor.poseAt(t); await settle(2); }
+      say("le curseur ne garde qu'une fenêtre du take en mémoire",
+          cursor._chunks.size <= 4,
+          { tronçons_gardés: cursor._chunks.size }, { tronçons_gardés: "≤ 4" });
+    }
+
+    // Letting go of a running replay: the picture is seconds away from where the
+    // replay resumes, and that is precisely the moment a hard seek is right
+    // rather than a fallback — the same instant a reset is.
+    {
+      const b = new Bench({});
+      await b.open(20, 22);
+      b.play(1);
+      await b.run(1);
+      b.clock.scrub(40);
+      b.clock.endScrub();
+      const before = b.v.seeks;
+      b.t = 40;                        // the replay resumes where the cursor was
+      await b.run(1.5);
+      const s = b.clock.stats;
+      say("la main relâchée, la lecture reprend la main et se recale une fois",
+          b.v.seeks - before === 1 && !b.v.paused && s.state === "suit le replay"
+          && Math.abs(s.driftMedia) < 0.1,
+          { recalages: b.v.seeks - before, état: s.state,
+            dérive: ms(s.driftMedia) },
+          { recalages: 1, état: "suit le replay", dérive: "|·| < 100 ms" });
     }
   } finally {
     performance.now = realNow;

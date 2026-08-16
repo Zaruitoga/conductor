@@ -69,7 +69,23 @@
           <button id="pb-pause">Pause</button>
           <button id="pb-stop" class="danger">Stop</button>
         </div>
-        <div class="progress"><div id="pb-bar" class="progress-bar"></div></div>
+        <!-- La barre n'est plus en lecture seule : c'est le curseur de balayage.
+             La parcourir lit la piste de pose et ne produit rien — ni frame, ni
+             événement, ni OSC (ADR 0004) ; on ne reprend la lecture qu'en la
+             lâchant. La bande claire dit jusqu'où la piste est calculée. -->
+        <div class="scrub" id="pb-scrub" role="slider" tabindex="0"
+             aria-label="Position dans le take"
+             aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"
+             aria-valuetext="0,0 s">
+          <div class="scrub__ready" id="pb-ready"></div>
+          <div class="scrub__bar" id="pb-bar"></div>
+          <div class="scrub__head" id="pb-head"></div>
+        </div>
+        <div class="line small muted">
+          <span id="pb-cursor">0,0 s</span>
+          <span class="grow"></span>
+          <span id="pb-track"></span>
+        </div>
         <div id="pb-status" class="muted small">Inactif.</div>
         <div id="pb-error" class="error small"></div>
       </section>

@@ -705,6 +705,43 @@ table.table td.spark-cell { width: 128px; padding-block: 0; }
 }
 .progress__bar.paused { background: var(--warn); }
 
+/* Une barre qu'on saisit. Plus haute que la barre témoin — 6 px se ratent à la
+   souris — et la piste reste fine, dessinée en fond. */
+.progress--seek {
+  position: relative;
+  height: 16px;
+  background: none;
+  border: none;
+  border-radius: 0;
+  overflow: visible;
+  cursor: pointer;
+  touch-action: none;
+}
+.progress--seek::before {
+  content: "";
+  position: absolute; inset: 5px 0;
+  background: var(--bg-0);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+}
+.progress--seek .progress__bar {
+  position: absolute; left: 1px; top: 6px;
+  height: 4px;
+  border-radius: var(--r-pill);
+}
+.progress__head {
+  position: absolute; top: 2px; left: 0;
+  width: 12px; height: 12px; margin-left: -6px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--bg-1);
+  pointer-events: none;
+}
+.progress--seek.seeking .progress__bar,
+.progress--seek.seeking .progress__head { background: var(--warn); }
+.progress--seek:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.progress--seek[aria-disabled="true"] { cursor: default; opacity: .55; }
+
 /* ── Empty state ───────────────────────────────────────────────────────── */
 .empty {
   padding: var(--sp-4);

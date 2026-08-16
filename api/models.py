@@ -110,6 +110,12 @@ class PlaybackRequest(BaseModel):
     take: PathSegment
     speed: float = 1.0
     loop: bool = False
+    # Where the first pass begins, in take seconds — the cursor a sweep left on
+    # an idle take.  Absent means row 0, which is what every play button that
+    # has not swept anything sends.  Unbounded here for the same reason
+    # `SeekRequest.t` is: the take's length is a fact about the file, and the
+    # engine bounds it at both ends.
+    start_s: float | None = None
 
 
 class SeekRequest(BaseModel):

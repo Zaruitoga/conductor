@@ -168,9 +168,16 @@
         <button class="btn" id="scene-play-pause" aria-pressed="false">Pause</button>
         <button class="btn btn--danger" id="scene-play-stop">Stop</button>
       </div>
-      <div class="progress" role="progressbar" id="scene-play-progress"
-           aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <!-- Manipulable : la parcourir reprend la lecture à l'instant visé, par le
+           saut (donc par une mise en régime, donc sans téléportation). Le
+           balayage lui-même — la roue et la vidéo qui suivent le curseur — est
+           dans le viz, qui a de quoi les montrer. -->
+      <div class="progress progress--seek" role="slider" id="scene-play-progress"
+           tabindex="0" aria-label="Position dans le take"
+           aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"
+           aria-valuetext="0 s">
         <div class="progress__bar" id="scene-play-bar"></div>
+        <div class="progress__head" id="scene-play-head"></div>
       </div>
       <div class="row small faint">
         <span id="scene-play-elapsed">0.0 s</span>
@@ -350,10 +357,14 @@
         <button class="btn btn--danger" id="playback-stop" disabled>Stop</button>
       </div>
 
-      <!-- Read-only by design: PlaybackEngine has no seek. -->
-      <div class="progress" role="progressbar" id="playback-progress"
-           aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <!-- La barre est manipulable : la parcourir reprend la lecture à l'instant
+           visé (POST /api/playback/seek). -->
+      <div class="progress progress--seek" role="slider" id="playback-progress"
+           tabindex="0" aria-label="Position dans le take"
+           aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"
+           aria-valuetext="0 s">
         <div class="progress__bar" id="playback-bar"></div>
+        <div class="progress__head" id="playback-head"></div>
       </div>
       <div class="row small faint">
         <span id="playback-elapsed">0.0 s</span>

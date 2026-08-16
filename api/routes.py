@@ -534,6 +534,16 @@ async def update_take(session: PathSegment, take: PathSegment,
 
 @router.post("/playback/start")
 async def playback_start(req: PlaybackRequest) -> dict:
+    """
+    Start replaying a take, optionally at an instant already chosen.
+
+    `start_s` is the cursor a sweep left on a take nobody was playing: sweeping
+    reads the pose track and reaches no model (ADR 0004), so there is no replay
+    for `POST /api/playback/seek` to talk to until this call.  Handing the
+    instant to `start` rather than jumping straight after it is what keeps the
+    take's opening — the wheel at the origin, a burst of frames and of OSC —
+    from being played for the length of a round trip.
+    """
     if core.csv_logger.active:
         raise HTTPException(409, "Stop recording before starting playback")
     if core.playback_engine.active:
@@ -547,10 +557,11 @@ async def playback_start(req: PlaybackRequest) -> dict:
         raise HTTPException(404, f"Take not found: {req.session}/{req.take}")
     await core.playback_engine.start(
         req.session, req.take, core.queue, core.reset_model, req.speed, req.loop,
-        on_seek=core.seek_model,
+        on_seek=core.seek_model, start_s=req.start_s,
     )
     return {"active": True, "session": req.session, "take": req.take,
-            "speed": req.speed, "loop": req.loop}
+            "speed": req.speed, "loop": req.loop,
+            "start_s": core.playback_engine.seek_target_s}
 
 
 @router.post("/playback/stop")

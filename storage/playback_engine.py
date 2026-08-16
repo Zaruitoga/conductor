@@ -175,6 +175,7 @@ class PlaybackEngine:
         speed:    float = 1.0,
         loop:     bool  = False,
         on_seek:  callable = None,
+        start_s:  float | None = None,
     ) -> None:
         """
         Start replaying a take in the background.
@@ -190,6 +191,14 @@ class PlaybackEngine:
         will resume on — the row's own offset, not the requested instant.  Same
         reasoning as `on_reset`: bringing the model to that instant is the
         model's business.
+
+        `start_s` is where the *first* pass begins — a cursor placed by sweeping
+        an idle take, which `seek` cannot serve because there is no replay to
+        talk to yet.  It is a pending seek and nothing else, so the loop applies
+        it through the same `_settle` before queueing a single row: starting at
+        zero and jumping straight after would play the take's opening for the
+        length of a round trip.  It belongs to that first pass alone — a looping
+        replay is replaying the take, not that ten seconds of it.
         """
         if self.active:
             log.warning("Playback already active — call stop() first")
@@ -213,7 +222,9 @@ class PlaybackEngine:
         self.paused    = False
         self._rows     = []
         self._offsets  = []
-        self._seek_to  = None
+        # `clamp_time` can only judge the negative side here — the take is not
+        # loaded yet, so `total_s` is 0 — and `row_index_at` bounds the other.
+        self._seek_to  = None if start_s is None else self.clamp_time(start_s)
         self._wake.set()
 
         self.active = True
@@ -222,7 +233,8 @@ class PlaybackEngine:
         )
         log.info(
             f"Playback started — {session}/{take} (×{speed}"
-            f"{', loop' if loop else ''})"
+            f"{', loop' if loop else ''}"
+            f"{f', from {self._seek_to:.3f}s' if start_s is not None else ''})"
         )
 
     def stop(self) -> None:
