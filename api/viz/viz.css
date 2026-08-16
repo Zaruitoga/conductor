@@ -96,20 +96,53 @@ button:hover { filter: brightness(1.1); }
 button:disabled { opacity: .45; cursor: default; filter: none; }
 button.danger { background: var(--bad); }
 
-.progress {
-  height: 8px;
+/* ── Le curseur de balayage ───────────────────────────────────────────────── */
+/* Une piste, trois couches : ce qui est calculé (bande claire), où l'on est
+   (barre), et la poignée. Haute de 18 px pour être saisissable à la souris —
+   une barre de 8 px se rate ; la piste elle-même reste fine. */
+.scrub {
+  position: relative;
+  height: 18px;
+  margin: 10px 0 4px;
+  cursor: pointer;
+  touch-action: none;      /* le glissé nous appartient, pas au défilement */
+}
+.scrub::before {
+  content: "";
+  position: absolute; left: 0; right: 0; top: 6px;
+  height: 6px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
-  overflow: hidden;
-  margin: 10px 0 6px;
 }
-.progress-bar {
-  height: 100%;
-  width: 0%;
+/* Jusqu'où la piste de pose est calculée : au-delà, il n'y a rien à montrer et
+   le curseur s'arrête. Se voit sans se lire — le take n'est balayable au-delà
+   que lorsque cette bande y arrive. */
+.scrub__ready {
+  position: absolute; left: 0; top: 7px;
+  height: 4px; width: 0%;
+  background: var(--border);
+  border-radius: 3px;
+}
+.scrub__bar {
+  position: absolute; left: 0; top: 7px;
+  height: 4px; width: 0%;
   background: var(--accent);
-  transition: width .25s linear;
+  border-radius: 3px;
 }
+.scrub__head {
+  position: absolute; top: 3px; left: 0;
+  width: 12px; height: 12px; margin-left: -6px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--card);
+}
+.scrub:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Pendant le balayage : la lecture est suspendue, chercher n'est pas jouer. */
+.scrub.sweeping .scrub__bar,
+.scrub.sweeping .scrub__head { background: var(--warn); }
+.scrub[aria-disabled="true"] { cursor: default; opacity: .5; }
+.line .grow { flex: 1; }
 
 /* ── Scène ────────────────────────────────────────────────────────────────── */
 #stage { flex: 1; position: relative; min-width: 0; }

@@ -272,6 +272,49 @@ def test_only_the_last_request_of_a_drag_costs_a_warm_up():
     assert engine.seek_target_s == 4.0
 
 
+def test_a_replay_can_begin_at_an_instant_without_playing_what_precedes_it():
+    """
+    Resuming where a sweep left the cursor, on a take that is *not* playing.
+
+    Sweeping needs no replay — it reads the pose track (ADR 0004) — so the
+    cursor is routinely placed while the engine is idle, and `seek` has no
+    replay to talk to then.  Starting first and jumping straight after would
+    work in the sense that the numbers end up right, and would show the take's
+    beginning for the length of a round trip: the wheel back at the origin, a
+    burst of frames and of OSC from a place nobody asked for.  So the instant
+    belongs to `start()` itself, where the same `_settle` applies it before a
+    single row is queued — one jump, no burst.
+
+    The loop runs for real here, unlike everything else in this module: what is
+    being asserted is precisely the *order* of the first two things it does.
+    """
+    take = _take()
+
+    async def scenario():
+        engine = PlaybackEngine(take.sm)
+        queue  = asyncio.Queue()
+        seen   = []
+
+        async def on_seek(t_s):
+            # The queue's state at this instant is the whole point: the warm-up
+            # runs with the loop parked in it, before anything is emitted.
+            seen.append((t_s, queue.qsize()))
+
+        await engine.start(take.session, take.take, queue, on_reset=lambda: None,
+                           speed=1.0, on_seek=on_seek, start_s=TARGET_S)
+        try:
+            first = await asyncio.wait_for(queue.get(), timeout=5.0)
+        finally:
+            engine.stop()
+        return seen, first
+
+    seen, first = asyncio.run(scenario())
+
+    assert seen == [(TARGET_S, 0)], f"the take's opening was replayed: {seen}"
+    # The first packet out is the take's own row at that instant, not row 0.
+    assert abs(first["ts_esp_us"] / 1e6 - TARGET_S) < 1.0 / HZ
+
+
 # ── The warm-up itself ───────────────────────────────────────────────────────
 
 _REFERENCE: tuple | None = None

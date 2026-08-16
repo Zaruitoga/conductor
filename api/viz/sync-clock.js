@@ -93,6 +93,16 @@ const HARD_RESYNC_S = 0.25;
 // budget this page caps on purpose.
 const SEEK_COOLDOWN_S = 0.25;
 
+// The same budget, for the hand instead of the replay. A drag fires one request
+// per pointer event — sixty a second — and each one is a decode restart, so the
+// picture is moved on a cadence and the position asked for in between is kept,
+// latest wins (`endScrub` honours the last one exactly). 80 ms is twelve
+// pictures a second: continuous to the eye, and a fraction of what a drag would
+// otherwise ask of the decoder. It is deliberately shorter than the resync's
+// debounce — a hand expects the picture to follow it, where a resync is a
+// correction nobody asked for.
+const SCRUB_COOLDOWN_S = 0.08;
+
 // Past this replay speed the video **detaches**: it stops following and freezes.
 // Falling silent honestly beats a jolt that corrects nothing — and past here it
 // is nothing else. Measured on the reference take, foreground window, one line
@@ -171,6 +181,12 @@ export class VideoSyncClock {
     this.needHardSync = true;   // armed at boot, on reset, on resume
     this._lastSeekAt  = -Infinity;   // wall clock: this is a cost budget
     this._playPending = false;
+
+    // A hand on the cursor, which outranks the replay while it lasts: sweeping
+    // is reading a take, not playing it (ADR 0004). The pending position is the
+    // last one asked for and not yet written.
+    this.scrubbing    = false;
+    this._scrubCt     = null;
     this._probe       = null;   // set while the domain offset is being measured
     this._abortProbe  = null;   // …and how to give that measurement up
 
@@ -224,6 +240,9 @@ export class VideoSyncClock {
     this.media          = null;
     this.lastTargetCt   = null;
     this.needHardSync   = true;
+    // A position asked for by the cursor names an instant of the file that is
+    // going away; written into the new one it would be somewhere else entirely.
+    this._scrubCt       = null;
     this._forget();
   }
 
@@ -249,6 +268,14 @@ export class VideoSyncClock {
    * hidden document, which presents nothing either — it resolves false and the
    * offset stays 0. The caller is expected to ask again rather than to treat a
    * missing measurement as a measurement of zero.
+   *
+   * It borrows three things from the element and gives all three back: the
+   * rate, the paused state, and **the position**. The third was missing, and it
+   * mattered the moment a sweep could ask for a measurement: letting go of the
+   * cursor left the picture at the probe's own second, seconds away from where
+   * the hand had stopped, which looks exactly like a picture that is simply
+   * wrong. Nothing else notices — the playing path hard-syncs on its next frame
+   * whatever it finds.
    */
   measureOffset() {
     const v = this.video;
@@ -258,6 +285,7 @@ export class VideoSyncClock {
       const seen = [];
       const wasPaused = v.paused;
       const rate = v.playbackRate;
+      const at   = v.currentTime;
       let n = 0, done = false;
 
       const finish = (ok) => {
@@ -266,6 +294,10 @@ export class VideoSyncClock {
         this._probe = this._abortProbe = null;
         v.playbackRate = rate;
         if (wasPaused) v.pause();
+        // One seek, and only where it changes something: this runs on a file
+        // that has just opened as often as after a sweep, and there the
+        // position it is restoring is the zero it started from.
+        if (Math.abs(v.currentTime - at) > 1e-3) v.currentTime = at;
         resolve(ok);
       };
       this._abortProbe = () => finish(false);
@@ -323,6 +355,11 @@ export class VideoSyncClock {
     // a second and would pause it back on the next tick.
     if (this._probe) { this.stats.state = "mesure du décalage"; return; }
 
+    // A hand is on the cursor. The state above is kept up to date — it is what
+    // the picture will have to rejoin — but nothing is written to the element:
+    // at 4 Hz this would fight the drag four times a second.
+    if (this.scrubbing) return;
+
     if (!this.active) {
       this._standDown("inactif");
       if (wasActive) this.needHardSync = true;
@@ -348,6 +385,11 @@ export class VideoSyncClock {
     this.lastFrameT = t;
     const v = this.video;
 
+    // The replay may well still be running under a hand on the cursor — a
+    // packet in flight, a pause not yet acknowledged. The cursor wins until it
+    // is let go, or the picture would be dragged back and forth between two
+    // drivers writing the same `currentTime`.
+    if (this.scrubbing) return;
     if (!this.active || this.paused) return;
     if (this._probe)     { this.stats.state = "mesure du décalage"; return; }
     if (!this.aligned)   { this.stats.state = "non aligné";        return; }
@@ -370,10 +412,11 @@ export class VideoSyncClock {
     this.stats.detached = false;
 
     // The alignment lives in the reading domain; the element only understands
-    // the request domain. This is the one line where the two meet, and it is a
-    // conversion — a subtraction of the measured constant — never a sum.
-    const targetMedia = t - this.onsetImuS + this.onsetVideoS;
-    const targetCt    = targetMedia - this.offset;
+    // the request domain. `_requestCt` is where the two meet — a conversion,
+    // never a sum — and the reading-domain target is that same number back in
+    // its own domain, which is what the observed drift is measured against.
+    const targetCt    = this._requestCt(t);
+    const targetMedia = targetCt + this.offset;
     this.lastTargetCt = targetCt;
 
     // Outside the file: a take can start before the camera rolled or end after
@@ -445,6 +488,96 @@ export class VideoSyncClock {
   onPresentedFrame(mediaTime) {
     this.media = mediaTime;
     if (this._probe) this._probe(mediaTime);
+  }
+
+  // ── The cursor ─────────────────────────────────────────────────────────────
+
+  /**
+   * Pose the picture at a take instant, asked for by a hand.
+   *
+   * Sweeping is reading a take, not playing it: the poses come off the track
+   * beside the take and nothing reaches the bus (ADR 0004), so no `frame.t`
+   * arrives to follow — this is the input that replaces it. While it lasts the
+   * cursor is the only driver of the element, whatever the replay is doing.
+   *
+   * @param {number} tS  the cursor, in take seconds — the same timeline `frame.t`
+   *                     counts on, so the same alignment converts it.
+   * @returns {boolean}  whether a picture exists at that instant at all
+   */
+  scrub(tS) {
+    const v = this.video;
+    this.scrubbing = true;
+
+    // A measurement is a short muted run of the file, which the pause below is
+    // about to end. Giving it up beats letting it time out on readings taken
+    // while the hand drags the picture around; `video.js` asks again once the
+    // cursor is let go.
+    if (this._abortProbe) this._abortProbe();
+
+    // Searching is not playing. The picture is posed, one frame at a time.
+    if (!v.paused) v.pause();
+    this.stats.drift = this.stats.driftMedia = null;
+    this.stats.trim  = 0;
+    this._forget();
+    // Whatever the picture ends up on, the replay will resume somewhere else
+    // entirely: it rejoins with a seek rather than by waiting out a threshold.
+    this.needHardSync = true;
+
+    if (!this.aligned) { this.stats.state = "non aligné";        return false; }
+    if (!v.duration)   { this.stats.state = "vidéo non chargée"; return false; }
+
+    const targetCt = this._requestCt(tS);
+    this.lastTargetCt = targetCt;
+
+    // Out of the file, which is ordinary rather than exceptional — a take can
+    // start before the camera rolled. Writing a bounded position would show a
+    // frame from elsewhere as though it were this instant's.
+    if (targetCt < 0 || targetCt > v.duration) {
+      this.stats.outOfRange = true;
+      this.stats.state = targetCt < 0 ? "avant la vidéo" : "après la vidéo";
+      this._scrubCt = null;
+      return false;
+    }
+    this.stats.outOfRange = false;
+    this.stats.state = "balayage";
+
+    this._scrubCt = targetCt;
+    if (nowS() - this._lastSeekAt >= SCRUB_COOLDOWN_S) this._flushScrub();
+    return true;
+  }
+
+  /**
+   * The hand lets go.
+   *
+   * The last position asked for is honoured here whatever the debounce says:
+   * the cadence exists to spare the decoder *during* the drag, and stopping a
+   * fraction of a second short of where the hand stopped would be a picture of
+   * somewhere else.
+   */
+  endScrub() {
+    this._flushScrub();
+    this.scrubbing = false;
+    this.needHardSync = true;
+  }
+
+  _flushScrub() {
+    if (this._scrubCt === null) return;
+    const ct = this._scrubCt;
+    this._scrubCt = null;
+    const v = this.video;
+    v.currentTime = Math.max(0, Math.min(ct, v.duration || ct));
+    this._lastSeekAt = nowS();
+  }
+
+  /**
+   * A take instant as a *request* on the element.
+   *
+   * Both anchors, never their difference (ADR 0001), then the conversion out of
+   * the reading domain the anchors live in. The one place the two domains meet,
+   * so that the playing path and the cursor cannot drift apart.
+   */
+  _requestCt(tS) {
+    return tS - this.onsetImuS + this.onsetVideoS - this.offset;
   }
 
   /** Forget the smoothed drift: there is nothing being followed to smooth. */

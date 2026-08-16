@@ -146,9 +146,17 @@ export function mountVideo(stage) {
   setInterval(() => {
     if (!hasVideo) return;
     const s = clock.stats;
-    const off = clock.active && s.state !== "suit le replay";
-    state.textContent = off ? s.state : "";
-    wrap.classList.toggle("idle", off);
+    // A hand on the cursor is a driver like the replay is: without this, an
+    // idle take being swept would report "inactif" over a picture that is
+    // following the cursor exactly.
+    const driven = clock.active || clock.scrubbing;
+    const named  = driven && s.state !== "suit le replay";
+    // "balayage" is named but *not* greyed: the picture is the right one, it is
+    // simply answering a hand rather than the take's timeline. Greying is for
+    // the cases where what is on screen is not this instant's picture.
+    const lost = named && s.state !== "balayage";
+    state.textContent = named ? s.state : "";
+    wrap.classList.toggle("idle", lost);
 
     const bits = [];
     if (clock.active && Number.isFinite(s.driftMedia)) {
@@ -178,6 +186,19 @@ export function mountVideo(stage) {
     onFrame(d) { clock.onFrame(d.t); },
     onMeta(m)  { if (m.topic === "reset") clock.onReset(); },
     onPlayback(p) { clock.onPlayback(p); },
+
+    // The cursor. `scrub` says whether there is a picture at that instant at
+    // all, which is what lets the page grey the inset out rather than leave a
+    // frozen frame looking like a correct one.
+    scrub(tS) { return hasVideo && clock.scrub(tS); },
+    endScrub() {
+      clock.endScrub();
+      // A sweep begun before the file had been measured gave that measurement
+      // up (it was a short muted run, and the cursor stopped the element). Ask
+      // again now the hand is off, rather than leave the domain constant at a
+      // zero nobody measured.
+      if (hasVideo && !clock.offsetMeasured) measure();
+    },
   };
 
   // The one handle out of this module, and nothing on the page reads it: it is
