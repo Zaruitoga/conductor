@@ -294,10 +294,12 @@ function renderPlayback(p) {
   // target is held until the replay reaches it, or until it plainly is not
   // going to (a jump refused, a replay stopped meanwhile).
   if (pendingSeek) {
-    const arrived = Math.abs(playbackElapsed - pendingSeek.t) < 1.5;
-    if (!p.active || arrived || Date.now() > pendingSeek.until) {
+    const arrived = Math.abs(playbackElapsed - pendingSeek.t) < ARRIVED_S;
+    if (!p.active || arrived || Date.now() - pendingSeek.at > HOLD_MS) {
       pendingSeek = null;
-      cursorT = p.active ? null : cursorT;
+      // The replay owns the bar again. On a take that stopped playing instead,
+      // the cursor is left where the hand put it — `Lire ici` starts there.
+      if (p.active) cursorT = null;
     }
   }
   renderScrub();
@@ -362,11 +364,23 @@ function fmtSignal(name, label, unit) {
 // this very track, storage/seek.py).
 const cursor = new PoseCursor();
 
+// The bar in the panel (api/static/js/panels/playback.js) answers to the same
+// four numbers, and the two pages share no module by design — the viz has no
+// build step and reimplements even its `api()` helper. Named here and there so
+// that tuning one and not the other is *visible* rather than buried in a
+// literal: how close the replay must get before the bar stops holding the
+// target, how long it is held at all, how long after the last key the target is
+// sent, and what a key moves by.
+const ARRIVED_S     = 1.5;
+const HOLD_MS       = 4000;
+const KEY_COMMIT_MS = 300;
+const KEY_STEP = { ArrowLeft: -1, ArrowRight: 1, PageDown: -10, PageUp: 10 };
+
 let sweeping    = false;   // a hand is on the bar — keyboard included
 let cursorT     = null;    // where it left the cursor, in take seconds
 let metaTotal   = 0;       // the take's length as the session tree knows it
 let resumeAfter = false;   // the replay was running when the hand came down
-let pendingSeek = null;    // {t, until}: the target, until the replay reaches it
+let pendingSeek = null;    // {t, at}: the target, until the replay reaches it
 let keyCommit   = null;
 
 const fmtS = (s) => `${(s || 0).toFixed(1).replace(".", ",")} s`;
@@ -496,7 +510,7 @@ async function endSweep() {
 
   const t = cursorT;
   if (t === null || !playbackActive) { renderScrub(); return; }
-  pendingSeek = { t, until: Date.now() + 4000 };
+  pendingSeek = { t, at: Date.now() };
   try {
     await api("POST", "/api/playback/seek", { t });
     // A seek is honoured while paused — deliberately, so its cost lands on the
@@ -535,8 +549,6 @@ scrubEl.addEventListener("pointercancel", endSweep);
 // Arrows for the same gesture without a mouse. The commit is trailing — a key
 // held down produces a stream of moves and only the last is worth a warm-up,
 // the same reasoning `PlaybackEngine.seek` applies to a drag.
-const KEY_STEP = { ArrowLeft: -1, ArrowRight: 1, PageDown: -10, PageUp: 10 };
-
 scrubEl.addEventListener("keydown", (e) => {
   const total = totalS();
   if (!total) return;
@@ -555,7 +567,7 @@ scrubEl.addEventListener("keydown", (e) => {
   startSweep();
   moveCursor(target);
   clearTimeout(keyCommit);
-  keyCommit = setTimeout(endSweep, 300);
+  keyCommit = setTimeout(endSweep, KEY_COMMIT_MS);
 });
 
 let sessionTree = [];
@@ -704,7 +716,7 @@ $("pb-start").onclick = async () => {
       loop: $("pb-loop").checked,
       ...(from === null ? {} : { start_s: from }),
     });
-    if (from !== null) pendingSeek = { t: from, until: Date.now() + 4000 };
+    if (from !== null) pendingSeek = { t: from, at: Date.now() };
     showError("");
   } catch (e) { showError(e.message); }
 };

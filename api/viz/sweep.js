@@ -45,10 +45,9 @@ async function defaultFetch(url) {
  * (`_harness.js`); everything else has a default that suits the page.
  */
 export class PoseCursor {
-  constructor({ fetchJson = defaultFetch, chunkS = CHUNK_S, keep = KEEP,
-                pollMs = POLL_MS } = {}) {
+  constructor({ fetchJson = defaultFetch, keep = KEEP, pollMs = POLL_MS } = {}) {
     this._fetch  = fetchJson;
-    this._chunkS = chunkS;
+    this._chunkS = CHUNK_S;
     this._keep   = keep;
     this._pollMs = pollMs;
 
@@ -152,7 +151,10 @@ export class PoseCursor {
     const k = lastAtOrBefore(chunk.t, tS);
     if (k < 0) {
       // Before the first pose of this chunk — the take's very beginning, or a
-      // gap the model declined to integrate. The chunk before holds it.
+      // gap the model declined to integrate, which can be wider than the edge
+      // the prefetch above watches. The chunk before holds it, so ask for it
+      // even from the middle of this one.
+      this._want(i - 1);
       const prev = this._chunks.get(i - 1);
       if (!prev || !prev.t.length) return null;
       return pose(prev, prev.t.length - 1);

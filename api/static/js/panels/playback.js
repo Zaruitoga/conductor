@@ -174,16 +174,33 @@ function renderSceneTransport(p, pct, shown) {
 //
 // Both bars share this state because they show the same replay — grabbing one
 // while the other is on screen is not a case, they are in different tabs.
-let seekTo   = null;   // the instant chosen, until the replay reaches it
-let seekAt   = 0;      // wall clock: how long we are prepared to hold it
-let dragging = false;
+// How close the replay has to get before the bar stops holding the target, and
+// how long it is held at all. `ARRIVED_S` is wide because the snapshot is 4 Hz
+// and a jump lands on a row, not on the instant asked for.
+const ARRIVED_S    = 1.5;
+const HOLD_MS      = 4000;
+const KEY_COMMIT_MS = 300;
+const KEY_STEP = { ArrowLeft: -1, ArrowRight: 1, PageDown: -10, PageUp: 10 };
+
+let seekTo    = null;   // the instant chosen, until the replay reaches it
+let seekAt    = 0;      // wall clock: how long we are prepared to hold it
+let holding   = false;  // a gesture in progress — a drag, or a run of keys
 let keyCommit = null;
 
-/** Let go of the held target once the replay has arrived — or plainly won't. */
+/**
+ * Let go of the held target once the replay has arrived — or plainly won't.
+ *
+ * `holding` covers the whole gesture and not merely a drag, and that is the
+ * point: an arrow step moves the target by a second, which is *inside*
+ * `ARRIVED_S` of where the replay already is, so settling during the gesture
+ * would clear the target in the very tick it was set — and the trailing commit
+ * would then find nothing to send. Arrow keys were inert for exactly that
+ * reason; only PageUp/PageDown, which move further than the window, worked.
+ */
 function settleSeek(p) {
-  if (seekTo === null || dragging) return;
-  const arrived = p.active && Math.abs(p.elapsed_s - seekTo) < 1.5;
-  if (!p.active || arrived || Date.now() - seekAt > 4000) seekTo = null;
+  if (seekTo === null || holding) return;
+  const arrived = p.active && Math.abs(p.elapsed_s - seekTo) < ARRIVED_S;
+  if (!p.active || arrived || Date.now() - seekAt > HOLD_MS) seekTo = null;
 }
 
 function timeAt(el, clientX) {
@@ -218,6 +235,9 @@ function aim(t) {
 async function commitSeek() {
   const t = seekTo;
   if (t === null) return;
+  // The hold counts from here, not from the first key of a run: what is being
+  // waited for is the replay arriving, and it has only just been told.
+  seekAt = Date.now();
   try {
     await api("POST", "/api/playback/seek", { t });
   } catch (e) {
@@ -234,16 +254,16 @@ function initSeekBar(barId) {
     e.preventDefault();
     el.setPointerCapture(e.pointerId);
     el.focus();
-    dragging = true;
+    holding = true;
     aim(timeAt(el, e.clientX));
   });
   el.addEventListener("pointermove", (e) => {
-    if (dragging) aim(timeAt(el, e.clientX));
+    if (holding) aim(timeAt(el, e.clientX));
   });
   const release = () => {
-    if (!dragging) return;
-    dragging = false;
-    if (seekTo !== null) commitSeek();
+    if (!holding) return;
+    holding = false;
+    commitSeek();
   };
   el.addEventListener("pointerup", release);
   el.addEventListener("pointercancel", release);
@@ -253,16 +273,17 @@ function initSeekBar(barId) {
   el.addEventListener("keydown", (e) => {
     if (!isPlaying()) return;
     const total = (state.playback && state.playback.total_s) || 0;
-    const step = { ArrowLeft: -1, ArrowRight: 1, PageDown: -10, PageUp: 10 }[e.key];
+    const step = KEY_STEP[e.key];
     let target = null;
     if (step !== undefined) target = aimedAt() + step * (e.shiftKey ? 0.1 : 1);
     else if (e.key === "Home") target = 0;
     else if (e.key === "End") target = total;
     else return;
     e.preventDefault();
+    holding = true;
     aim(target);
     clearTimeout(keyCommit);
-    keyCommit = setTimeout(() => { if (seekTo !== null) commitSeek(); }, 300);
+    keyCommit = setTimeout(() => { holding = false; commitSeek(); }, KEY_COMMIT_MS);
   });
 }
 
