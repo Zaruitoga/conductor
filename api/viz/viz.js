@@ -10,6 +10,7 @@ import * as THREE from './vendor/three.module.js';
 import { OrbitControls } from './vendor/OrbitControls.js';
 import { mountVideo } from './video.js';
 import { PoseCursor } from './sweep.js';
+import { LAYOUTS, label, readLayout, saveLayout } from './layout.js';
 
 const $ = (id) => document.getElementById(id);
 const RECONNECT_MS = 1000;
@@ -59,8 +60,14 @@ camera.lookAt(0, 0, 0);
 // i.e. 4× the fragments, and MSAA on top of that; full-screen ground + grid make
 // it fill-rate bound. Past ~1.5 the extra pixels buy nothing visible here, and a
 // saturated main thread also stops draining the packet socket in time.
+//
+// `alpha: true` is what the superposition layout needs — the scene is composed
+// over the take's picture, so the clear has to be able to disappear. Everywhere
+// else the clear alpha is put back to 1 and the output is the opaque black it
+// has always been: transparency is a state of one layout, not of the page.
 const dpr = window.devicePixelRatio || 1;
-const renderer = new THREE.WebGLRenderer({ antialias: dpr < 2 });
+const renderer = new THREE.WebGLRenderer({ antialias: dpr < 2, alpha: true });
+renderer.setClearColor(0x000000, 1);
 renderer.setPixelRatio(Math.min(dpr, 1.5));
 renderer.setSize(container.clientWidth, container.clientHeight);
 container.appendChild(renderer.domElement);
@@ -80,7 +87,8 @@ scene.add(new THREE.AmbientLight(0x404040));
 const light = new THREE.DirectionalLight(0xffffff, 1);
 light.position.set(5, 10, 7.5);
 scene.add(light);
-scene.add(new THREE.AxesHelper(2));
+const axes = new THREE.AxesHelper(2);
+scene.add(axes);
 
 const texture = new THREE.TextureLoader().load('checker.png');
 texture.wrapS = THREE.RepeatWrapping;
@@ -121,7 +129,59 @@ const qFix = new THREE.Quaternion()
 // Three hooks, called below where the information already passes: a frame, a
 // reset, and the playback state. Which take it shows is decided here, because
 // the session tree — with both anchors and the stored `video_file` — lives here.
-const takeVideo = mountVideo($("stage"));
+//
+// `onView` is the scene's own share of the layout description: the camera follow
+// and the renderer's transparency, which are Three.js state and belong here.
+// Nothing is decided in this callback — `layout.js` decided, this applies.
+const takeVideo = mountVideo($("stage"), { onView: applyView });
+
+// The follow the user asked for, which is not always the follow in force: the
+// superposition cuts it (a virtual camera nobody recorded the pose of would make
+// the drawn wheel slide over a filmed one that is not moving). Remembered, so
+// leaving that layout gives back the choice rather than a default.
+let followWanted = $("follow").checked;
+$("follow").addEventListener("change", () => {
+  if (!$("follow").disabled) followWanted = $("follow").checked;
+});
+
+function applyView(d) {
+  const box = $("follow");
+  box.disabled = !d.follow;
+  box.checked  = d.follow && followWanted;
+  box.parentElement.title = d.follow
+    ? "" : "Coupé en superposition : la caméra virtuelle n'est pas posée comme la vraie.";
+
+  renderer.setClearAlpha(d.transparent ? 0 : 1);
+  // Composed over the picture, the ground and the grid would be a grey sheet
+  // over the video: what the superposition shows is the wheel and nothing else.
+  ground.visible = grid.visible = axes.visible = !d.transparent;
+}
+
+// ── The layout picker ───────────────────────────────────────────────────────
+// Built from `LAYOUTS`, so adding one is an entry in `layout.js` and nothing
+// here. `chosen` is the pair {layout, swapped} as the storage holds it.
+let chosen = readLayout(window.localStorage);
+
+function setLayout(name, swapped = chosen.swapped) {
+  chosen = { layout: name, swapped };
+  saveLayout(window.localStorage, name, swapped);
+  // The ⇄ lives on the picture's own bar (it is a gesture on the inset), so the
+  // swap comes back up here to be persisted — this module owns the storage.
+  takeVideo.setLayout(name, swapped, (s) => setLayout(chosen.layout, s));
+  for (const b of $("layout-pick").children) {
+    b.classList.toggle("on", b.dataset.layout === name);
+    b.setAttribute("aria-pressed", b.dataset.layout === name ? "true" : "false");
+  }
+}
+
+for (const name of LAYOUTS) {
+  const b = document.createElement("button");
+  b.dataset.layout = name;
+  b.textContent = label(name);
+  b.onclick = () => setLayout(name);
+  $("layout-pick").appendChild(b);
+}
+setLayout(chosen.layout, chosen.swapped);
 
 // ── Latest sample (only the newest one is ever drawn) ───────────────────────
 const sampleQ = new THREE.Quaternion();
@@ -130,6 +190,11 @@ let hasSample = false;
 let packetCount = 0;   // computed packets since the last rate tick
 let frameCount = 0;    // rendered frames since the last rate tick
 let rateHz = 0;
+// Monotonic over the page's life, never reset: a caller differences two readings
+// over its own window (`_harness.js`'s `fps()`), which is the only way two
+// samplers can share one counter without stealing each other's frames.
+let renderMs    = 0;   // cumulative time inside `renderer.render`
+let renderFrames = 0;  // …and how many frames that covers
 
 // Camera follow: the wheel travels metres away from the origin (a coin-shaped
 // trajectory alone is ~2 m across), so without this it simply leaves the frame.
@@ -140,6 +205,7 @@ const camDelta = new THREE.Vector3();
 function animate() {
   requestAnimationFrame(animate);
   frameCount++;
+  renderFrames++;
   if (hasSample) {
     imuPivot.quaternion.copy(qFix).multiply(sampleQ);
     wheelPos.copy(sampleP).applyQuaternion(qFix);
@@ -154,7 +220,15 @@ function animate() {
     }
   }
   controls.update();
+  // Timed, because a frame rate alone cannot answer the question this page's
+  // render budget exists for. `requestAnimationFrame` is vsync-capped: two
+  // layouts both sitting at 60 fps say nothing about which of them is close to
+  // giving way. What is left over — the time *not* spent here — is the margin,
+  // and it is what decides whether a layout costs what it is worth. Two
+  // `performance.now()` per frame is nothing next to the draw itself.
+  const t0 = performance.now();
   renderer.render(scene, camera);
+  renderMs += performance.now() - t0;
 }
 animate();
 
@@ -318,6 +392,7 @@ let playbackElapsed = 0;
 let playbackTotal   = 0;
 
 // ── HUD (throttled: the stream runs far faster than the eye) ────────────────
+let lastFps  = 0;
 let lastTick = performance.now();
 setInterval(() => {
   const now = performance.now();
@@ -327,6 +402,7 @@ setInterval(() => {
   const fps = Math.round(frameCount / elapsed);
   packetCount = 0;
   frameCount = 0;
+  lastFps = fps;
   $("hud-rate").textContent = `${rateHz} Hz (frames) · ${fps} fps`;
   if (hasSample) {
     $("hud-pos").textContent =
@@ -733,3 +809,15 @@ $("pb-stop").onclick = async () => {
 };
 
 refreshSessions();
+
+// The one handle out of the scene, and nothing on the page reads it — the same
+// standing as `window.__vizVideo`. It is what `_harness.js`'s `fps()` drives:
+// the decoder's cost on the scene's frame rate has to be measured at the three
+// layouts with the window in the foreground, and doing that by hand means
+// switching layout and reading a HUD that averages over a whole second.
+window.__viz = {
+  setLayout,
+  layout: () => ({ ...chosen }),
+  stats: () => ({ rateHz, fps: lastFps, renderMs, renderFrames,
+                  pixelRatio: renderer.getPixelRatio(), msaa: dpr < 2, dpr }),
+};

@@ -22,6 +22,13 @@
 // copy of the clock with the correction removed:
 //
 //     (await import('/viz/_harness.js')).run('./_sync_clock_sans_correctif.js')
+//
+// `run(clockMod, sweepMod, layoutMod)` takes the three modules it exercises, so
+// a copy of any one of them with a correction removed can be pointed at. The
+// layout cases are the only synchronous ones and touch no DOM: `layout.js`'s
+// `describe()` is the single decision behind both appliers, which is what makes
+// "a take with no video folds the pane *here* and hatches the frame *there*, and
+// never carries a badge" checkable rather than merely intended.
 
 /**
  * The drift campaign, on the real page: what the ticket's table is made of.
@@ -119,9 +126,116 @@ export function record({ quietMs = 300 } = {}) {
   };
 }
 
-export async function run(mod = "./sync-clock.js", sweepMod = "./sweep.js") {
+/**
+ * Le coût du décodeur sur le fps de la scène, aux trois mises en page.
+ *
+ *     const t = await (await import('/viz/_harness.js')).fps();
+ *
+ * La mesure que #8 n'a jamais pu faire : `requestAnimationFrame` est **suspendu**
+ * dans un onglet caché, donc la boucle Three.js ne tourne pas, le HUD affiche
+ * `0 fps` et une campagne lancée là mesure l'économie d'énergie du navigateur.
+ * D'où le refus net en tête plutôt qu'un tableau de zéros — un zéro y ressemble
+ * exactement à un rendu effondré, et c'est précisément la confusion que le
+ * double affichage paquets/s + fps existe pour éviter.
+ *
+ * À lancer **fenêtre au premier plan**, un replay en cours sur un take *avec
+ * vidéo* : sans lecture il n'y a pas de décodeur, donc pas de coût à mesurer.
+ * C'est vérifié plutôt que recommandé — un tableau pris sans replay ne dit rien
+ * et ne ressemble en rien à un tableau vide. Chaque mise en page est prise
+ * séparément parce qu'elles ne coûtent pas la même chose : la superposition
+ * compose la 3D par-dessus une vidéo plein cadre, ce qui n'est pas le
+ * remplissage d'une incrustation dans un coin.
+ *
+ * **Le coût est une différence, donc il faut les deux passes.** Le repère se
+ * prend sur un take *sans* vidéo — même scène, mêmes mises en page, pas de
+ * décodeur — et c'est l'écart qui répond à la question du ticket :
+ *
+ *     await fps()                       // take avec vidéo, replay en cours
+ *     await fps({ repere: true })       // take sans vidéo (001), sans replay
+ *
+ * Trois colonnes, et la troisième est la seule qui décide. `fps` est **plafonné
+ * par le vsync** : deux mises en page à 60 fps ne disent pas laquelle est près de
+ * céder. `p95_ms` (l'intervalle entre deux images au 95ᵉ centile) attrape la
+ * saccade qu'une moyenne honnête cache. `rendu_ms` est le temps passé *dans*
+ * `renderer.render` par image : c'est la marge, et c'est ce qui dit si garder la
+ * superposition coûte son prix. Le HUD, lui, moyenne sur une seconde entière.
+ */
+export async function fps({ seconds = 10, settleS = 1.5, repere = false,
+                            vues = [["incrustation", false], ["incrustation", true],
+                                    ["cote-a-cote", false], ["superposition", false]],
+                          } = {}) {
+  const viz = window.__viz;
+  if (!viz) throw new Error("scène absente : lancer depuis /viz/");
+  if (document.visibilityState !== "visible") {
+    throw new Error("onglet caché : rAF est suspendu, la mesure ne vaudrait rien " +
+                    "(fenêtre au premier plan, cf. #28)");
+  }
+  // Le décodeur ne coûte que s'il tourne, et une passe sans lecture serait un
+  // repère pris pour une mesure — l'erreur exacte que le tableau doit rendre
+  // impossible. Le repère, lui, s'affirme (`repere: true`) et ne se déduit pas.
+  if (!repere) {
+    const pb = await (await fetch("/api/playback/status")).json();
+    const src = document.querySelector(".video-wrap video");
+    if (!pb.active) {
+      throw new Error("aucune lecture en cours : lance un replay sur un take " +
+                      "AVEC vidéo, ou demande le repère (fps({repere:true}))");
+    }
+    if (!src || !src.currentSrc) {
+      throw new Error("le take joué n'a pas de vidéo : sans décodeur il n'y a " +
+                      "rien à mesurer — c'est le repère (fps({repere:true}))");
+    }
+  }
+
+  const before = viz.stats();
+  const was    = viz.layout();      // la campagne rend la vue où elle l'a prise
+  const rows = [];
+  const wait = (s) => new Promise((r) => setTimeout(r, s * 1000));
+
+  const count = (s) => new Promise((resolve) => {
+    const gaps = [];
+    const a = viz.stats();          // les compteurs de rendu, différenciés
+    let last = performance.now();
+    const t0 = last;
+    let n = 0;
+    const step = (now) => {
+      gaps.push(now - last); last = now; n++;
+      if (now - t0 < s * 1000) requestAnimationFrame(step);
+      else {
+        const b = viz.stats();
+        const frames = b.renderFrames - a.renderFrames;
+        gaps.sort((x, y) => x - y);
+        resolve({ fps: +(n / ((now - t0) / 1000)).toFixed(1),
+                  rendu_ms: frames ? +((b.renderMs - a.renderMs) / frames).toFixed(2) : null,
+                  p95_ms: +gaps[Math.floor(gaps.length * 0.95)].toFixed(1),
+                  max_ms: +gaps[gaps.length - 1].toFixed(1) });
+      }
+    };
+    requestAnimationFrame(step);
+  });
+
+  for (const [name, swapped] of vues) {
+    viz.setLayout(name, swapped);
+    await wait(settleS);              // le temps que la vidéo reprenne sa place
+    const m = await count(seconds);
+    const s = viz.stats();
+    rows.push({ vue: swapped ? `${name} (permutée)` : name,
+                ...m, paquets_hz: s.rateHz, hud_fps: s.fps });
+  }
+
+  viz.setLayout(was.layout, was.swapped);
+  const meta = { pixelRatio: before.pixelRatio, msaa: before.msaa, dpr: before.dpr,
+                 écran: `${screen.width}×${screen.height}`, durée_s: seconds,
+                 repère: repere };
+  console.table(rows);
+  console.log(meta);
+  return { vues: rows, rendu: meta };
+}
+
+export async function run(mod = "./sync-clock.js", sweepMod = "./sweep.js",
+                          layoutMod = "./layout.js") {
   const { VideoSyncClock } = await import(mod + "?h=" + Date.now());
   const { PoseCursor } = await import(sweepMod + "?h=" + Date.now());
+  const L = await import(layoutMod + "?h=" + Date.now());
   const log = [];
 
   // ── Virtual wall clock ─────────────────────────────────────────────────────
@@ -824,6 +938,146 @@ export async function run(mod = "./sync-clock.js", sweepMod = "./sweep.js") {
           { recalages: b.v.seeks - before, état: s.state,
             dérive: ms(s.driftMedia) },
           { recalages: 1, état: "suit le replay", dérive: "|·| < 100 ms" });
+    }
+
+    // ── Les trois mises en page, et ce que la scène en dit ───────────────────
+    // Rien ici n'est asynchrone ni ne touche au DOM : `describe()` est la seule
+    // décision, et les deux appliquants n'en prennent aucune. C'est ce qui rend
+    // ces règles vérifiables — appliquées à la main dans deux fichiers, elles
+    // seraient d'accord jusqu'au jour où l'un des deux changerait.
+    {
+      // Un `localStorage` de bench : le vrai n'est pas disponible partout (la
+      // navigation privée fait lever l'accès) et le vider casserait la page.
+      const store = (init = {}) => {
+        const m = new Map(Object.entries(init));
+        return { getItem: (k) => (m.has(k) ? m.get(k) : null),
+                 setItem: (k, v) => m.set(k, String(v)), _m: m };
+      };
+
+      {
+        const s = store();
+        L.saveLayout(s, "superposition", true);
+        const read = L.readLayout(s);      // le rechargement, sans recharger
+        say("le choix de mise en page survit à un rechargement",
+            read.layout === "superposition" && read.swapped === true,
+            read, { layout: "superposition", swapped: true });
+      }
+      {
+        const read = L.readLayout(store({ "viz.layout": "plein-ecran" }));
+        say("une mise en page inconnue retombe sur l'incrustation",
+            read.layout === "incrustation", read, { layout: "incrustation" });
+      }
+
+      // Le volet replié : sans lui, un take sans vidéo coûte la moitié de
+      // l'écran pour un cadre vide.
+      {
+        const d = L.describe({ layout: "cote-a-cote", hasTake: true, hasVideo: false });
+        say("sans vidéo, le côte-à-côte replie son volet",
+            d.video === "folded" && d.scene === "full" && !d.hatched,
+            { volet: d.video, scène: d.scene }, { volet: "folded", scène: "full" });
+      }
+      // Ailleurs le cadre reste — hachuré, et sans badge : l'absence est déjà
+      // nommée, et un badge d'état sur une absence est un état de trop.
+      {
+        const rows = ["incrustation", "superposition"].map((layout) =>
+          L.describe({ layout, hasTake: true, hasVideo: false,
+                       driven: true, state: "non aligné" }));
+        // En superposition le cadre est *derrière* la scène : un sol opaque le
+        // cacherait entièrement, et l'absence ne se verrait nulle part.
+        const vu = rows[1].transparent;
+        say("sans vidéo : cadre hachuré ailleurs, visible, et jamais de badge",
+            rows.every((d) => d.hatched && d.badge === "" && d.video !== "folded") && vu,
+            rows.map((d) => ({ cadre: d.video, hachuré: d.hatched, badge: d.badge,
+                               transparent: d.transparent })),
+            { hachuré: true, badge: "", "transparent (superposition)": true });
+      }
+
+      // Aucun take à l'écran — le direct, ou la page qui vient d'ouvrir. Il n'y
+      // a pas d'image absente à signaler : il n'y a pas de take. Un cadre
+      // hachuré là serait une réponse à une question que personne n'a posée, et
+      // en superposition il coûterait le sol et la grille de la scène.
+      {
+        const rows = L.LAYOUTS.map((layout) => L.describe({ layout }));
+        say("sans take : aucun cadre, et la scène garde son sol et son suivi",
+            rows.every((d) => d.video === "folded" && !d.hatched
+                              && !d.transparent && d.follow),
+            rows.map((d) => ({ vue: d.layout, cadre: d.video, hachuré: d.hatched,
+                               transparent: d.transparent, suivi: d.follow })),
+            { cadre: "folded", hachuré: false, transparent: false, suivi: true });
+      }
+
+      // Les trois badges du ticket, sur le bandeau de scène et image grisée.
+      {
+        const rows = ["non aligné", "avant la vidéo", "après la vidéo"].map((state) =>
+          L.describe({ layout: "incrustation", hasVideo: true, driven: true, state }));
+        say("non aligné / avant / après la vidéo : badge et image grisée",
+            rows.every((d, i) => d.badge === ["non aligné", "avant la vidéo",
+                                              "après la vidéo"][i] && d.greyed),
+            rows.map((d) => ({ badge: d.badge, grisée: d.greyed })),
+            { badge: "l'état", grisée: true });
+      }
+      {
+        // Au-delà du seuil de vitesse l'image ne peut plus suivre : le dire vaut
+        // mieux que de la laisser sauter en donnant à croire que c'est le take.
+        const d = L.describe({ layout: "cote-a-cote", hasVideo: true, driven: true,
+                               state: "décrochée (×2)" });
+        say("le décrochage est annoncé à l'écran",
+            d.badge === "décrochée (×2)" && d.greyed,
+            { badge: d.badge, grisée: d.greyed },
+            { badge: "décrochée (×2)", grisée: true });
+      }
+      {
+        // Trois états où l'image affichée est *juste*, et qui ne doivent donc
+        // rien dire : la pause pose la frame de l'instant et la tient — la
+        // griser retournerait exactement le raisonnement qui fait griser les
+        // autres.
+        const q = (state, driven = true) =>
+          L.describe({ layout: "incrustation", hasVideo: true, driven, state });
+        const suit  = q("suit le replay");
+        const pause = q("en pause");
+        const idle  = q("inactif", false);
+        say("le nominal, la pause et l'inactivité ne portent pas de badge",
+            [suit, pause, idle].every((d) => d.badge === "" && !d.greyed),
+            { suit: suit.badge, pause: [pause.badge, pause.greyed], inactif: idle.badge },
+            { suit: "", pause: ["", false], inactif: "" });
+      }
+      {
+        const d = L.describe({ layout: "incrustation", hasVideo: true,
+                               driven: true, state: "balayage" });
+        say("le balayage est nommé mais pas grisé",
+            d.badge === "balayage" && !d.greyed,
+            { badge: d.badge, grisée: d.greyed }, { badge: "balayage", grisée: false });
+      }
+
+      // La superposition : vue suggestive, pas vérification. La caméra virtuelle
+      // n'est pas posée comme la vraie et rien ne l'enregistre, donc son suivi de
+      // roue est coupé — sinon l'image de synthèse glisse sur une image filmée
+      // qui, elle, ne bouge pas.
+      {
+        const sup = L.describe({ layout: "superposition", hasVideo: true });
+        const aut = ["incrustation", "cote-a-cote"].map((layout) =>
+          L.describe({ layout, hasVideo: true }));
+        say("la superposition coupe le suivi de roue et compose sur la vidéo",
+            !sup.follow && sup.transparent && sup.video === "full"
+            && aut.every((d) => d.follow && !d.transparent),
+            { superposition: { suivi: sup.follow, transparent: sup.transparent },
+              autres: aut.map((d) => ({ suivi: d.follow, transparent: d.transparent })) },
+            { superposition: { suivi: false, transparent: true },
+              autres: "suivi conservé" });
+      }
+      {
+        const inc = L.describe({ layout: "incrustation", hasVideo: true, swapped: true });
+        const cot = L.describe({ layout: "cote-a-cote", hasVideo: true, swapped: true });
+        const sup = L.describe({ layout: "superposition", hasVideo: true, swapped: true });
+        say("la permutation n'appartient qu'à l'incrustation",
+            inc.video === "full" && inc.scene === "inset"
+            && cot.video === "half" && cot.scene === "half"
+            && sup.video === "full" && sup.scene === "full",
+            { incrustation: [inc.video, inc.scene], côte: [cot.video, cot.scene],
+              superposition: [sup.video, sup.scene] },
+            { incrustation: ["full", "inset"], côte: ["half", "half"],
+              superposition: ["full", "full"] });
+      }
     }
   } finally {
     performance.now = realNow;

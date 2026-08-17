@@ -96,6 +96,17 @@ button:hover { filter: brightness(1.1); }
 button:disabled { opacity: .45; cursor: default; filter: none; }
 button.danger { background: var(--bad); }
 
+/* Le choix de mise en page : trois boutons, celui en vigueur allumé. Aucune ne
+   domine, donc aucune n'est un « défaut » signalé autrement que par l'état. */
+.seg { gap: 4px; }
+.seg button {
+  background: var(--bg); color: var(--muted);
+  border: 1px solid var(--border); padding: 4px 8px; font-size: 12px;
+}
+.seg button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+/* Une case décochée *et* désactivée dirait « non » ; ici elle dit « coupé ». */
+label:has(input:disabled) { opacity: .55; cursor: help; }
+
 /* ── Le curseur de balayage ───────────────────────────────────────────────── */
 /* Une piste, trois couches : ce qui est calculé (bande claire), où l'on est
    (barre), et la poignée. Haute de 18 px pour être saisissable à la souris —
@@ -145,35 +156,79 @@ button.danger { background: var(--bad); }
 .line .grow { flex: 1; }
 
 /* ── Scène ────────────────────────────────────────────────────────────────── */
-#stage { flex: 1; position: relative; min-width: 0; }
+/* La scène est une rangée : le canvas, et le volet vidéo quand il en prend une
+   part. Les autres mises en page superposent, et se règlent en position
+   absolue. Le fond est noir parce que le rendu, lui, peut devenir transparent
+   (superposition) — sans ce noir, quitter cette mise en page ferait changer la
+   couleur du ciel de la scène. */
+#stage { flex: 1; position: relative; min-width: 0; display: flex; background: #000; }
 
-#canvas-container { width: 100%; height: 100%; }
+#canvas-container { flex: 1 1 auto; min-width: 0; height: 100%; position: relative; z-index: 1; }
 #canvas-container canvas { display: block; }
 
+/* L'incrustation permutée : c'est la scène qui va dans le coin, et la vidéo qui
+   prend le cadre. Le même geste, vu de l'autre côté. */
+#stage[data-scene="inset"] #canvas-container {
+  position: absolute;
+  right: 12px; bottom: 12px;
+  flex: none;
+  width: min(36%, 420px);
+  height: auto;
+  aspect-ratio: 16 / 9;
+  z-index: 2;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, .55);
+}
+
 /* ── La vidéo du take ─────────────────────────────────────────────────────── */
-/* Une seule mise en page : l'incrustation, en bas à droite — le HUD occupe le
-   bas à gauche et les deux ne se disputent rien. Les trois mises en page
-   commutables et l'habillage de scène sont le ticket suivant. */
+/* Trois mises en page (#28), et aucune ne domine : `data-mode` est ce que
+   `layout.js` a décidé, jamais une décision prise ici.
+     inset  — l'incrustation, en bas à droite ; le HUD occupe le bas à gauche.
+     half   — le côte-à-côte, la même surface aux deux.
+     full   — la superposition (ou l'incrustation permutée) : plein cadre,
+              derrière le canvas, qui compose par-dessus.
+     folded — le volet replié, faute de vidéo. */
 .video-wrap {
+  background: #000;
+  overflow: hidden;
+  position: relative;
+}
+
+.video-wrap[data-mode="inset"] {
   position: absolute;
   right: 12px;
   bottom: 12px;
   width: min(36%, 420px);
-  background: #000;
+  aspect-ratio: 16 / 9;
+  z-index: 2;
   border: 1px solid var(--border);
   border-radius: 6px;
   box-shadow: 0 6px 22px rgba(0, 0, 0, .55);
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
 }
-/* Un take sans vidéo n'a pas de cadre vide : l'absence est déjà nommée dans le
-   bloc « Lecture », et un rectangle noir sur la scène ne l'expliquerait pas. */
-.video-wrap.hidden { display: none; }
+.video-wrap[data-mode="half"] {
+  flex: 0 0 42%;
+  min-width: 0;
+  height: 100%;
+  border-left: 1px solid var(--border);
+}
+/* Plein cadre, sous le canvas — et **sans `z-index`** : une valeur, même 0, y
+   créerait un contexte d'empilement qui enfermerait le bandeau sous la scène.
+   Il serait alors masqué par la roue dessinée et ses boutons injoignables, ce
+   qui est exactement ce que « l'état se lit sur la scène » exclut. En `auto`,
+   le canvas (z-index 1) passe devant l'image et le bandeau (3) devant lui. */
+.video-wrap[data-mode="full"] {
+  position: absolute;
+  inset: 0;
+  z-index: auto;
+}
+/* Replié : le côte-à-côte perdrait la moitié de l'écran sur un cadre vide. */
+.video-wrap[data-mode="folded"] { display: none; }
 
 .video-wrap video {
   width: 100%;
-  aspect-ratio: 16 / 9;
+  height: 100%;
   object-fit: contain;
   background: #000;
   display: block;
@@ -183,7 +238,22 @@ button.danger { background: var(--bad); }
    taire ne suffit pas — le bandeau le dit et l'image se retire. */
 .video-wrap.idle video { opacity: .3; filter: grayscale(1); }
 
+/* Un take sans vidéo : le cadre reste, hachuré, là où l'image serait — et sans
+   badge, l'absence étant déjà nommée (bandeau et bloc « Lecture »). Un
+   rectangle noir, lui, ressemblerait à une vidéo qui ne se décode pas. */
+.video-wrap.hatched {
+  background:
+    repeating-linear-gradient(45deg,
+      rgba(255, 255, 255, .05) 0 8px, transparent 8px 16px), #14171a;
+}
+.video-wrap.hatched video { display: none; }
+
+/* Le bandeau flotte sur l'image : une seule règle pour les quatre modes, et
+   l'état reste lisible sur la scène quelle que soit la place du cadre. */
 .video-bar {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  z-index: 3;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -201,15 +271,18 @@ button.danger { background: var(--bad); }
   background: var(--warn); color: #1a1d21; font-weight: 600;
 }
 .video-chip:empty { display: none; }
-.video-sound {
+.video-btn {
   flex: none; background: none; border: 1px solid var(--border);
   color: var(--muted); border-radius: 3px; padding: 0 5px; font: inherit;
   line-height: 1.4; cursor: pointer;
 }
-.video-sound:hover { color: var(--text); border-color: var(--accent); }
+.video-btn:hover { color: var(--text); border-color: var(--accent); }
 
+/* Le HUD reste au-dessus de tout : paquets/s **et** fps, précisément pour que
+   les deux modes de défaillance restent distinguables (#28). */
 #hud {
   position: absolute;
+  z-index: 3;
   bottom: 12px;
   left: 12px;
   padding: 8px 10px;

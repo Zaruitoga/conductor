@@ -1,14 +1,14 @@
 // video.js — the take's video, in the scene, slave to the replay.
 //
-// Everything about *how it follows* lives in `sync-clock.js`; this file is the
-// wiring: one `<video>` inset in the corner of the scene, the file it plays, the
-// permanent `requestVideoFrameCallback` chain, and what the bar says when the
-// picture is not following.
+// Everything about *how it follows* lives in `sync-clock.js`, and everything
+// about *what the scene shows of it* in `layout.js`; this file is the wiring:
+// one `<video>` on the scene, the file it plays, the permanent
+// `requestVideoFrameCallback` chain, and the appliance of what `describe()`
+// decided — the frame's place, the hatching, the badge, the greying.
 //
-// One layout, deliberately: the inset. The three switchable layouts and the
-// scene dressing are the next ticket — what this one has to demonstrate is that
-// the picture follows `frame.t` without jolting, and that is visible in a
-// corner just as well as across half the screen.
+// It decides none of that itself. The same description drives `viz.js` (the
+// camera follow and the renderer's transparency), and two appliers agreeing by
+// hand would agree right up to the day one of them changed.
 //
 // Muted by default, with an explicit toggle (decision #19). Unmuted it would
 // demand a user gesture before starting, which breaks the one thing this page is
@@ -17,6 +17,7 @@
 // to sound *is* the gesture that unblocks audio, so nothing is lost.
 
 import { VideoSyncClock } from "./sync-clock.js";
+import { describe, DEFAULT_LAYOUT } from "./layout.js";
 
 // A `loadeddata` fired in a hidden tab presents nothing, so the domain offset
 // cannot be measured there. It is retried when the page comes back rather than
@@ -35,15 +36,20 @@ const enc = encodeURIComponent;
  * Mount the video on the scene.
  *
  * @param {HTMLElement} stage  the scene container (`#stage`)
+ * @param {object} [opts]
+ * @param {(view: object) => void} [opts.onView]  called when the description of
+ *   the scene's own share changes — the camera follow and the renderer's
+ *   transparency, which belong to Three.js and not here.
  * @returns hooks the page calls where the information already passes
  */
-export function mountVideo(stage) {
+export function mountVideo(stage, { onView } = {}) {
   const wrap  = el("div", "video-wrap");
   const bar   = el("div", "video-bar");
   const label = el("span", "grow");
   const drift = el("span", "video-drift");
   const state = el("span", "video-chip");
-  const sound = el("button", "video-sound");
+  const swap  = el("button", "video-btn");
+  const sound = el("button", "video-btn");
 
   const video = el("video");
   video.muted       = true;
@@ -64,7 +70,14 @@ export function mountVideo(stage) {
     if (!video.muted) video.play().catch(() => {});
   };
 
-  bar.append(label, drift, state, sound);
+  // « Incrustation permutable » : le même geste dans les deux sens, la vidéo
+  // dans le coin de la scène ou la scène dans le coin de la vidéo. Un bouton
+  // plutôt qu'un quatrième choix dans la liste — c'est la même mise en page, vue
+  // de l'autre côté, et on la permute en la regardant.
+  swap.textContent = "⇄";
+  swap.title = "Permuter l'incrustation";
+
+  bar.append(label, drift, state, swap, sound);
   wrap.append(bar, video);
   stage.appendChild(wrap);
 
@@ -83,8 +96,12 @@ export function mountVideo(stage) {
   }
 
   let key      = null;    // "session/take" currently loaded
+  let hasTake  = false;   // a take is on screen at all — false live, false at boot
   let hasVideo = false;
   let measuring = false;
+  let layout   = DEFAULT_LAYOUT;
+  let swapped  = false;
+  let onSwap   = null;    // the page persists the choice; this module holds none
 
   async function measure() {
     if (measuring || !video.duration) return;
@@ -119,8 +136,9 @@ export function mountVideo(stage) {
     if (k === key) return;
     key = k;
 
+    hasTake  = !!info;
     hasVideo = !!(info && info.video_file);
-    wrap.classList.toggle("hidden", !hasVideo);
+    applyView();
     clock.newFile();
     clock.setAlignment(info ? info.onset_imu_s : null,
                        info ? info.onset_video_s : null);
@@ -136,6 +154,41 @@ export function mountVideo(stage) {
     video.load();
   }
 
+  // The one place the description is applied to the DOM. Everything it writes
+  // comes from `describe()`; the only thing decided here is *when* to ask —
+  // a change of take, a change of layout, and the bar's own slow cadence.
+  let sceneKey = null;
+
+  function applyView() {
+    const s = clock.stats;
+    // A hand on the cursor is a driver like the replay is: without this, an
+    // idle take being swept would report "inactif" over a picture that is
+    // following the cursor exactly.
+    const driven = clock.active || clock.scrubbing;
+    const d = describe({ layout, swapped, hasTake, hasVideo,
+                         state: s.state, driven });
+
+    // Two attributes, two readers: `data-mode` places the frame, `data-scene`
+    // places the canvas — the stage is the only element that can be told the
+    // second, the canvas not being this module's to style.
+    if (wrap.dataset.mode   !== d.video) wrap.dataset.mode   = d.video;
+    if (stage.dataset.scene !== d.scene) stage.dataset.scene = d.scene;
+    wrap.classList.toggle("hatched", d.hatched);
+    wrap.classList.toggle("idle", d.greyed);
+    if (state.textContent !== d.badge) state.textContent = d.badge;
+    // Permuting is a gesture on an inset, and on a take that has one.
+    swap.hidden  = d.layout !== "incrustation" || !hasVideo;
+    sound.hidden = !hasVideo;
+
+    // Three.js state is not free to rewrite four times a second, and neither is
+    // a `follow` checkbox the user may be looking at. Keyed on exactly what the
+    // callback reads: adding `scene` here would make a ⇄ rewrite the renderer
+    // for a change it does not care about, which is what the gate is for.
+    const k = `${d.follow}|${d.transparent}`;
+    if (onView && k !== sceneKey) { sceneKey = k; onView(d); }
+    return d;
+  }
+
   // The bar, refreshed on its own slow cadence — the frame path runs at ~100 Hz
   // and has no business touching the DOM.
   //
@@ -144,19 +197,12 @@ export function mountVideo(stage) {
   // picture is *not* the take's — not aligned, out of range, detached — because
   // a frozen picture looks exactly like a correct one on a still instant.
   setInterval(() => {
-    if (!hasVideo) return;
     const s = clock.stats;
-    // A hand on the cursor is a driver like the replay is: without this, an
-    // idle take being swept would report "inactif" over a picture that is
-    // following the cursor exactly.
-    const driven = clock.active || clock.scrubbing;
-    const named  = driven && s.state !== "suit le replay";
-    // "balayage" is named but *not* greyed: the picture is the right one, it is
-    // simply answering a hand rather than the take's timeline. Greying is for
-    // the cases where what is on screen is not this instant's picture.
-    const lost = named && s.state !== "balayage";
-    state.textContent = named ? s.state : "";
-    wrap.classList.toggle("idle", lost);
+    applyView();
+    // Hatched, the bar keeps its name and nothing else: a drift, a rate or a
+    // domain constant left there would be the *previous* take's, printed over
+    // the frame of a take that has no picture at all.
+    if (!hasVideo) { drift.textContent = ""; return; }
 
     const bits = [];
     if (clock.active && Number.isFinite(s.driftMedia)) {
@@ -180,9 +226,27 @@ export function mountVideo(stage) {
     drift.textContent = bits.join(" · ");
   }, 250);
 
+  swap.onclick = () => {
+    swapped = !swapped;
+    applyView();
+    if (onSwap) onSwap(swapped);
+  };
+
   const api = {
     clock,
     setTake,
+
+    /**
+     * The layout, decided by the page (which owns the control and the storage)
+     * and applied here. `onSwapped` is how the ⇄ button gets persisted without
+     * this module knowing what `localStorage` is.
+     */
+    setLayout(name, isSwapped, onSwapped) {
+      layout  = name;
+      swapped = !!isSwapped;
+      onSwap  = onSwapped || null;
+      return applyView();
+    },
     onFrame(d) { clock.onFrame(d.t); },
     onMeta(m)  { if (m.topic === "reset") clock.onReset(); },
     onPlayback(p) { clock.onPlayback(p); },
