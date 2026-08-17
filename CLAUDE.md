@@ -179,6 +179,19 @@ Three switchable layouts, and **none dominates** — each serves a different mom
 - **fps alone cannot answer the question.** It is vsync-capped, so two layouts both sitting at 60 fps say nothing about which is close to giving way. The deciding column is `rendu_ms`, the time spent *inside* `renderer.render` per frame (`viz.js` keeps two monotonic counters a caller differences over its own window), with the 95th-percentile inter-frame interval beside it for the jank a mean hides.
 - **The decoder's cost is a difference**, so the campaign is run twice: once on a take with a video and a replay running, once with `{repere: true}` on a take without one. The baseline is the same scene and the same layouts minus the decoder.
 
+**Measured** (#28, 2026-08-17 — foreground window, 1280×800 at dpr 2 so `pixelRatio` 1.5 and MSAA off, ten seconds per layout, replay at ×1 on the reference take with its video):
+
+| vue | fps | `renderer.render` | p95 entre images | max | paquets/s |
+|---|---|---|---|---|---|
+| incrustation | 60,1 | 0,17 ms | 17,7 ms | 17,9 ms | 50 |
+| incrustation permutée | 60,0 | 0,15 ms | 17,7 ms | 18,0 ms | 50 |
+| côte à côte | 60,0 | 0,16 ms | 17,7 ms | 17,9 ms | 50 |
+| superposition | 60,0 | 0,11 ms | 17,7 ms | 17,8 ms | 50 |
+
+**The superposition stays, and the measurement is what says so.** Three readings, in the order they matter. The `max` column is the strongest: at 60 Hz a dropped frame reads 33 ms, and over forty seconds of campaign **not one interval ever reached two vsync periods** — the jank the p95 exists to catch never happened at any layout. The drawing itself costs **about 1 % of a 16,7 ms budget**, and the superposition is the *cheapest* of the four rather than the dearest: the ground and the grid are hidden while composing, so the fill-rate-bound geometry the render cap exists for is precisely what that layout does not draw, and the picture behind it is composited by the browser rather than by us. And the packet rate held at 50 Hz throughout — the other failure mode, a saturated main thread no longer draining the socket, which is exactly why the HUD shows both figures and not one.
+
+Two bounds on that claim, neither of which changes it. The figures are one screen and one window size; fill cost scales with surface, so a fullscreen 4K would have to be re-measured — one line in the console. And the baseline pass was not run, so the decoder's own share is not isolated: it cannot be, from `rendu_ms`, since decoding happens off the render thread entirely. What bounds it instead is that nothing was lost anywhere — no dropped frame, no packet — which is the question the ticket actually asked.
+
 Playback from the viz uses the existing API plus **`POST /api/playback/pause|resume`**. Pause is a flag plus a wake-up `asyncio.Event` in `_replay_loop`; since row deadlines are absolute (`t0_real + elapsed/speed`), resuming *shifts `t0_real` by the paused duration*, otherwise the backlog would replay in one burst. `PlaybackEngine` **does** seek (`POST /api/playback/seek`, see "Resuming at an instant"), which is why that one event covers pause, resume and seek alike: a seek asked for while paused has to be honoured *then*, not on the play button — which is exactly what a sweep does.
 
 #### Sweeping a take (`sweep.js`, the bar in the "Lecture" block)
