@@ -148,6 +148,18 @@ const PROBE_SKIP    = 4;      // presentations belonging to the seek's landing
 const PROBE_FRAMES  = 8;      // readings kept, median taken
 const PROBE_WAIT_MS = 3000;
 
+// The three states `layout.js` has to recognise by name, exported so that the
+// producer and the reader cannot drift apart on a string. Every other state is
+// prose the scene merely repeats, and needs no constant: what these three carry
+// is a *decision*, and it is the same one in each case — **the picture on screen
+// is the right one**. Following says so; a sweep says so while answering a hand
+// rather than the take's timeline; a pause poses the instant's own frame and
+// holds it. Anything else means what is displayed is not this instant's picture,
+// which is exactly what the scene has to say out loud.
+export const STATE_FOLLOWING = "suit le replay";
+export const STATE_SCRUBBING = "balayage";
+export const STATE_PAUSED    = "en pause";
+
 const nowS = () => performance.now() / 1000;
 
 export class VideoSyncClock {
@@ -367,7 +379,7 @@ export class VideoSyncClock {
     }
     if (this.paused) {
       this.video.pause();
-      this.stats.state = "en pause";
+      this.stats.state = STATE_PAUSED;
       // Paused, no frame arrives: the picture is posed once, on entering the
       // pause. The snapshot comes back through here at 4 Hz, and replaying the
       // seek on every pass would count four resyncs a second of stillness.
@@ -465,7 +477,7 @@ export class VideoSyncClock {
       this._setRate(this.speed * (1 + trim));
     }
 
-    this.stats.state = "suit le replay";
+    this.stats.state = STATE_FOLLOWING;
     // `v.paused` is read back rather than tracked with a flag of our own: the
     // browser pauses a muted video in a hidden tab, and the video has to restart
     // by itself when the tab comes back.
@@ -539,7 +551,7 @@ export class VideoSyncClock {
       return false;
     }
     this.stats.outOfRange = false;
-    this.stats.state = "balayage";
+    this.stats.state = STATE_SCRUBBING;
 
     this._scrubCt = targetCt;
     if (nowS() - this._lastSeekAt >= SCRUB_COOLDOWN_S) this._flushScrub();
