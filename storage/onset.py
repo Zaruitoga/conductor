@@ -56,7 +56,7 @@ import math
 import config
 from model.clock import TimeBase
 from storage.playback_engine import row_to_packet
-from transport.protocol import SLOT_FIELDS, SUPER_BASE, SUPER_MAX
+from transport.protocol import SLOT_FIELDS
 
 # The rule's two constants. Deliberately not `PARAMS.declare(...)`: a tunable
 # would make a proposition depend on a setting, which is what ADR 0001 rules
@@ -74,23 +74,14 @@ NO_GYRO  = "aucun flux gyro"
 NO_ONSET = (f"aucun silence d'au moins {SILENCE_MIN_S:g} s "
             f"suivi d'un franchissement")
 
-# Which columns hold the gyro, per packet type — the same shape as
-# `csv_logger.PAYLOAD_FIELDS`, and for the same reason: a CSV files a *simple*
-# slot's vector in the anonymous columns and a *super* slot's under its sensor's
-# name (issue #12).  The reference session recorded the first — two simple slots,
-# GYRO and GAME_RV at 50 Hz — so reading only the named ones would work against
-# every fixture in this repo and against none of the real takes.
-#
-# The named triple comes from `protocol.SLOT_FIELDS`, the registry CLAUDE.md
-# warns must not be retyped.  The anonymous one has no registry to come from:
-# `parse_packet` spells it out for every Vec3 type, which is issue #12 itself.
-_GYRO_SLOT = 0                    # SLOT_NAME[0] == "GYRO"
-_GYRO_TYPE = 0x01                 # TYPE_NAME[0x01], the simple gyro slot
-
-_GYRO_FIELDS: dict[int, tuple[str, ...]] = {
-    _GYRO_TYPE: ("x", "y", "z"),
-    **{t: SLOT_FIELDS[_GYRO_SLOT] for t in range(SUPER_BASE, SUPER_MAX + 1)},
-}
+# Which columns hold the gyro — three names, whatever carried them.  This used
+# to be a table keyed by packet type, because a simple slot filed its vector in
+# anonymous columns and a super slot under its sensor's name; that asymmetry was
+# issue #12 and it is gone.  Reading a take no longer requires knowing how the
+# ESP was configured, which is the whole point: this module is analysis, and the
+# type table it had to carry was transport knowledge.
+_GYRO_SLOT   = 0                          # SLOT_NAME[0] == "GYRO"
+_GYRO_FIELDS = SLOT_FIELDS[_GYRO_SLOT]
 
 # Resolution of the curve on the wire. Time is rounded to the microsecond, which
 # loses nothing — the timeline *is* integer microseconds — and keeps the JSON
@@ -211,15 +202,12 @@ def read_gyro_norm(csv_path: str) -> tuple[list[tuple[float, float]], float]:
 
 
 def _gyro_norm(packet: dict) -> float | None:
-    """|ω| from whichever columns this packet's slot filed it under, or None."""
-    fields = _GYRO_FIELDS.get(packet["typeId"])
-    if fields is None:
-        return None
+    """|ω| if this packet carries a gyro, whatever slot delivered it."""
     try:
-        x, y, z = (packet[name] for name in fields)
+        x, y, z = (packet[name] for name in _GYRO_FIELDS)
     except KeyError:
-        # A super slot whose deps do not include the gyro: the columns are in
-        # the file, blank, and `row_to_packet` leaves them out.
+        # Not a gyro packet, or a super slot whose deps do not include one: the
+        # columns are in the file, blank, and `row_to_packet` leaves them out.
         return None
     return math.sqrt(x * x + y * y + z * z)
 

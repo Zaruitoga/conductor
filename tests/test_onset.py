@@ -198,19 +198,19 @@ def test_the_threshold_is_a_crossing_not_a_ceiling():
     assert _anchors(propose(curve)) == _at(3.0)
 
 
-# ── Reading a take: two column layouts, one timeline ─────────────────────────
+# ── Reading a take: two transports, one timeline ─────────────────────────────
 
 def _gyro_simple(seq, t_s, norm):
     """A simple `GYRO` slot packet — the reference session's own configuration."""
     ts = int(round(t_s * 1e6))
     return {"type": "gyro", "typeId": 0x01, "seq": seq,
             "ts_esp_us": ts, "ts_rx_us": ts,
-            "x": norm / math.sqrt(3), "y": norm / math.sqrt(3),
-            "z": norm / math.sqrt(3)}
+            "gyro_x": norm / math.sqrt(3), "gyro_y": norm / math.sqrt(3),
+            "gyro_z": norm / math.sqrt(3)}
 
 
 def _gyro_super(seq, t_s, norm):
-    """The same vector, bundled — and therefore filed under other columns."""
+    """The same vector, bundled — and filed under the very same columns."""
     ts = int(round(t_s * 1e6))
     return {"type": "super_0", "typeId": 0x10, "seq": seq,
             "ts_esp_us": ts, "ts_rx_us": ts, "dep_slots": [0, 6],
@@ -224,7 +224,8 @@ def _attitude(seq, t_s):
     ts = int(round(t_s * 1e6))
     return {"type": "game_rv", "typeId": 0x07, "seq": seq,
             "ts_esp_us": ts, "ts_rx_us": ts,
-            "qw": 1.0, "qx": 0.0, "qy": 0.0, "qz": 0.0}
+            "game_rv_qw": 1.0, "game_rv_qx": 0.0,
+            "game_rv_qy": 0.0, "game_rv_qz": 0.0}
 
 
 def _packets(build, *segments, t0=0.0):
@@ -232,12 +233,13 @@ def _packets(build, *segments, t0=0.0):
     return [build(i, t0 + t, v) for i, (t, v) in enumerate(_curve(*segments))]
 
 
-def test_the_curve_is_read_from_both_column_layouts():
+def test_the_curve_is_read_from_either_transport():
     """
-    A simple slot files its vector under `x,y,z`, a super slot under `gyro_x…`
-    (issue #12).  The reference session uses the first, every test fixture in
-    this repo uses the second, and reading only one of them would work
-    perfectly against everything except the real data.
+    The same gesture recorded on a simple `GYRO` slot and inside a super slot
+    gives the same curve — and this module needs no table of packet types to
+    get it, both filing their vector under `gyro_x/y/z` (issue #12).  Before
+    that, reading only one of the two dispositions worked perfectly against
+    every fixture in this repo and against none of the real takes.
     """
     curves = []
     for build in (_gyro_simple, _gyro_super):

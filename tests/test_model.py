@@ -52,9 +52,10 @@ def _simple_pair(motion, t, seq):
     ts = int(round(t * 1e6))
     return [
         {"type": "gyro", "typeId": 0x01, "seq": seq, "ts_esp_us": ts,
-         "ts_rx_us": ts, "x": gx, "y": gy, "z": gz},
+         "ts_rx_us": ts, "gyro_x": gx, "gyro_y": gy, "gyro_z": gz},
         {"type": "game_rv", "typeId": 0x07, "seq": seq, "ts_esp_us": ts,
-         "ts_rx_us": ts, "qw": qw, "qx": qx, "qy": qy, "qz": qz},
+         "ts_rx_us": ts, "game_rv_qw": qw, "game_rv_qx": qx,
+         "game_rv_qy": qy, "game_rv_qz": qz},
     ]
 
 

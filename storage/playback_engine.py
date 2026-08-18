@@ -11,11 +11,13 @@ End signal:
   When the CSV is exhausted, a sentinel packet {"typeId": "playback_end"} is
   pushed onto the Queue so main.py can transition back to IDLE mode.
 
-Note on super-slot packets:
-  During playback, packets are reconstructed from the named fields stored in
-  the CSV (gyro_x, game_rv_qw, etc.).  The dep_slots field is not included
-  in playback packets since it is not stored in the CSV; downstream stages
-  that need it should use the field names directly.
+Note on reconstructed packets:
+  A packet is rebuilt from the named columns the CSV stores (gyro_x,
+  game_rv_qw, …), which are the packet's own field names — so a replayed
+  packet is spelled exactly like the live one it was written from, whatever
+  slot it came out of (issue #12).  The dep_slots field is the one thing not
+  restored, not being stored; nothing reads it downstream, the model decanting
+  a packet by the fields it carries rather than by its shape.
 
 Seeking
 -------
@@ -38,7 +40,7 @@ import os
 
 from model.clock import TimeBase
 from storage.session_manager import SessionManager
-from transport.protocol import ALL_SUPER_NAMED_FIELDS
+from transport.protocol import PACKET_FIELDS, TYPE_NAME
 
 log = logging.getLogger("playback_engine")
 
@@ -48,27 +50,11 @@ log = logging.getLogger("playback_engine")
 # rejected. See model/clock.py for how the two are told apart.
 _PACING_MAX_GAP_US = 5_000_000
 
-# Must stay in sync with udp_receiver.py — except type 0x20 (heartbeat), which
-# is telemetry never written to the CSV, so there is nothing to replay for it.
-PACKET_TYPES: dict[int, str] = {
-    0x01: "gyro",         0x02: "accel",    0x03: "mag",
-    0x04: "linear_accel", 0x05: "rv",       0x06: "geo_rv",
-    0x07: "game_rv",      0x08: "arvr_rv",
-}
-for _i in range(8):
-    PACKET_TYPES[0x10 + _i] = f"super_{_i}"
-
-_VEC3_FIELDS = ("x", "y", "z")
-_QUAT_FIELDS = ("qw", "qx", "qy", "qz")
-
-PAYLOAD_FIELDS: dict[int, tuple[str, ...]] = {
-    0x01: _VEC3_FIELDS,  0x02: _VEC3_FIELDS,
-    0x03: _VEC3_FIELDS,  0x04: _VEC3_FIELDS,
-    0x05: _QUAT_FIELDS,  0x06: _QUAT_FIELDS,
-    0x07: _QUAT_FIELDS,  0x08: _QUAT_FIELDS,
-    # Super types: scan all named fields; only populated columns are loaded
-    **{0x10 + i: ALL_SUPER_NAMED_FIELDS for i in range(8)},
-}
+# The type tables come from protocol.py rather than being retyped here: this
+# module used to carry its own copy of TYPE_NAME and its own copy of the CSV's
+# payload columns, both of which had to be kept in step by hand.  Membership in
+# PACKET_FIELDS is what makes a row replayable at all — the heartbeat is absent
+# from it, which is exactly why it is never written and has nothing to replay.
 
 SENTINEL = {"typeId": "playback_end"}
 
@@ -77,10 +63,12 @@ def row_to_packet(row: dict) -> dict | None:
     """
     Reconstruct a packet dict from a CSV row.
 
-    For super-slot rows, all non-empty named fields are loaded; any field
-    absent or blank in the CSV (deps not active when the session was
-    recorded) is simply omitted from the packet.
-    Returns None if type_id is missing or unknown.
+    Every non-empty named column the type can carry is loaded; a field absent
+    or blank in the CSV (a dep that was not active when the take was recorded)
+    is simply omitted from the packet.  One loop for every type, simple or
+    super, because both file their payload under the same names (issue #12).
+    Returns None if type_id is missing, unknown, or names a type that is not
+    recorded.
 
     Module-level rather than a method because it is the *only* decoder of the
     CSV's layout, and the pose-track computation (storage/pose_track.py) reads
@@ -93,20 +81,20 @@ def row_to_packet(row: dict) -> dict | None:
         return None
 
     type_id = int(raw)
-    if type_id not in PACKET_TYPES:
+    if type_id not in PACKET_FIELDS:
         log.debug(f"Unknown type_id 0x{type_id:02X} — row skipped")
         return None
 
     packet: dict = {
         "version":   1,
-        "type":      PACKET_TYPES[type_id],
+        "type":      TYPE_NAME[type_id],
         "typeId":    type_id,
         "seq":       int(row["seq"]),
         "ts_esp_us": int(row["ts_esp_us"]),
         "ts_rx_us":  int(row["ts_rx_us"]),
     }
 
-    for field in PAYLOAD_FIELDS.get(type_id, ()):
+    for field in PACKET_FIELDS[type_id]:
         v = row.get(field, "")
         if v:
             packet[field] = float(v)
