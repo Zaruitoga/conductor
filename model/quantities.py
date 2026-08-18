@@ -33,7 +33,7 @@ what it got instead of quietly integrating mismatched samples.
 
 import logging
 
-from transport.protocol import SLOT_FIELDS, SLOT_NAME, TYPE_NAME
+from transport.protocol import PACKET_FIELDS, SLOT_FIELDS, SLOT_NAME, TYPE_NAME
 
 log = logging.getLogger("model.quantities")
 
@@ -60,16 +60,6 @@ _SLOT_QUANTITY: dict[int, tuple[str, int]] = {
     6: (ATTITUDE_REL, 0),   # GAME_RV  — no magnetometer
     7: (ATTITUDE_REL, 1),   # ARVR_RV  — stabilised variant
 }
-
-# Field names as they appear on a *simple* packet (0x01–0x08). The same physical
-# value carries different keys depending on how it was transported, which is
-# exactly the asymmetry this module erases.
-_SIMPLE_VEC3 = ("x", "y", "z")
-_SIMPLE_QUAT = ("qw", "qx", "qy", "qz")
-
-# A quantity is considered coherent with the tick if it arrived in the same
-# datagram; otherwise its age is reported and the caller decides.
-_QUAT_QUANTITIES = frozenset({ATTITUDE_REL, ATTITUDE_ABS})
 
 
 def quantity_of_slot(slot: int) -> str | None:
@@ -169,32 +159,28 @@ class QuantityResolver:
         return frozenset(updated)
 
     def _decant(self, packet: dict, type_id: int) -> list[tuple]:
-        """Every (quantity, slot, value) this packet carries."""
-        if 0x01 <= type_id <= 0x08:
-            # Simple packet: the slot is the type, and the payload keys are the
-            # generic x/y/z or qw/qx/qy/qz.
-            slot = type_id - 1
+        """
+        Every (quantity, slot, value) this packet carries.
+
+        Driven by the *fields present*, not by the type: since every payload is
+        named for its quantity (issue #12), a gyro delivered on its own and one
+        bundled in a super slot are read by the same line.  The type is asked
+        one question only — is this a sensor packet at all — which is what keeps
+        a heartbeat out.  `bundled` follows from how many quantities came out,
+        so a super slot with a single dep scores as unbundled, exactly as before.
+        """
+        if type_id not in PACKET_FIELDS:
+            return []
+
+        out = []
+        for slot, fields in SLOT_FIELDS.items():
             quantity = quantity_of_slot(slot)
             if quantity is None:
-                return []
-            keys = _SIMPLE_QUAT if quantity in _QUAT_QUANTITIES else _SIMPLE_VEC3
-            value = self._read(packet, keys)
-            return [] if value is None else [(quantity, slot, value)]
-
-        if 0x10 <= type_id <= 0x17:
-            # Super packet: several slots concatenated, each under its own
-            # prefixed field names.
-            out = []
-            for slot, fields in SLOT_FIELDS.items():
-                quantity = quantity_of_slot(slot)
-                if quantity is None:
-                    continue
-                value = self._read(packet, fields)
-                if value is not None:
-                    out.append((quantity, slot, value))
-            return out
-
-        return []
+                continue
+            value = self._read(packet, fields)
+            if value is not None:
+                out.append((quantity, slot, value))
+        return out
 
     @staticmethod
     def _read(packet: dict, keys) -> tuple | None:

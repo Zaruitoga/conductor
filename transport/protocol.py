@@ -34,9 +34,15 @@ ACK body (ESP → PC, type 0x30):
     DataHeader + n_simple(B) + AckSimpleEntry[n] (12B) +
                  n_super(B)  + AckSuperEntry[n]  (14B) + host_ip[4]
 
-Super-slot field naming: when the SuperSlotLayout knows a slot's dep list,
-payload floats are emitted as named fields (gyro_x, game_rv_qw, …) and
-dep_slots is included; otherwise parse_packet falls back to generic s0..sN.
+Field naming: a packet's payload is named for the *quantity* it carries, never
+for the slot it was wired to — `gyro_x/y/z`, `game_rv_qw…`, whatever the ESP's
+configuration.  A simple 0x01 packet and a super slot bundling the gyro spell
+their gyro identically, so nothing downstream has to ask which one it got
+(issue #12; the model made the same move in model/quantities.py).  The names
+come from PACKET_FIELDS, and they are the CSV's columns too, `storage/` writing
+the packet's own keys.  The one exception is a super slot whose dep list the
+SuperSlotLayout does not know yet: there is nothing to name it *with*, so
+parse_packet falls back to generic s0..sN and sets dep_slots to None.
 """
 
 import struct
@@ -119,6 +125,21 @@ ALL_SUPER_NAMED_FIELDS: tuple[str, ...] = sum(
     (SLOT_FIELDS[i] for i in range(8)), ()
 )
 
+# Payload field names per packet type — the single table (issue #12).  A simple
+# sensor is one slot, and the offset is `type = slot + 1`: it used to be spelled
+# out wherever a packet was decoded (here, model/quantities.py, storage/onset.py)
+# and lives here alone now.  A super slot may carry any subset of the slots, so
+# it declares them all and only the ones present are ever written.
+#
+# Three readers, one table: parse_packet names a payload with it, csv_logger
+# writes those columns, playback_engine reads them back.  Membership doubles as
+# "is this recordable" — the heartbeat is absent, which is what keeps telemetry
+# out of the CSV.
+PACKET_FIELDS: dict[int, tuple[str, ...]] = {
+    **{i + 1: SLOT_FIELDS[i] for i in range(8)},
+    **{SUPER_BASE + i: ALL_SUPER_NAMED_FIELDS for i in range(8)},
+}
+
 
 # ── Data-plane parsing (ESP → PC) ────────────────────────────────────────────
 
@@ -179,13 +200,12 @@ def parse_packet(
         "ts_rx_us":  ts_rx_us,
     }
 
-    if type_id in VEC3_TYPES:
-        x, y, z = struct.unpack_from("<3f", payload)
-        packet.update(x=x, y=y, z=z)
-
-    elif type_id in QUAT_TYPES:
-        qw, qx, qy, qz = struct.unpack_from("<4f", payload)
-        packet.update(qw=qw, qx=qx, qy=qy, qz=qz)
+    if type_id in VEC3_TYPES or type_id in QUAT_TYPES:
+        # Named for the quantity, not for the slot: a 0x01 payload is
+        # gyro_x/y/z, exactly as it would be inside a super slot (issue #12).
+        fields = PACKET_FIELDS[type_id]
+        vals   = struct.unpack_from(f"<{len(fields)}f", payload)
+        packet.update(zip(fields, vals))
 
     elif SUPER_BASE <= type_id <= SUPER_MAX:
         super_idx = type_id - SUPER_BASE

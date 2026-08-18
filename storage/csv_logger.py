@@ -4,26 +4,33 @@ storage/csv_logger.py — Logs all received UDP packets to a CSV file.
 Runs before the pipeline (see main.py) to preserve raw data independently
 of the computation model.
 
-CSV schema:
+CSV schema — one quantity, one column:
 
   Common columns (always present):
     ts_rx_us, seq, ts_esp_us, type_id
 
-  Simple sensor columns (blank when not applicable):
-    x, y, z              Vec3   (typeId 0x01–0x04)
-    qw, qx, qy, qz       Quat   (typeId 0x05–0x08)
+  Payload columns (blank when the packet does not carry them):
+    gyro_x/y/z, accel_x/y/z, mag_x/y/z, linear_accel_x/y/z,
+    rv_qw/qx/qy/qz, geo_rv_qw/qx/qy/qz,
+    game_rv_qw/qx/qy/qz, arvr_rv_qw/qx/qy/qz
 
-  Heartbeat packets (typeId 0x20) are telemetry, not sensor data, and are
-  deliberately NOT logged — they are absent from PAYLOAD_FIELDS so write()
-  skips them.
+A gyro lands in gyro_x/y/z whether it arrived as its own 0x01 packet or inside
+a super slot — the column says what it holds, and a tool reading a take never
+has to know how the ESP was wired to find a quantity (issue #12).  There is no
+table here to keep in step with the reader's: both sides name columns from
+`protocol.PACKET_FIELDS`, and a packet's keys *are* its columns.  The anonymous
+x/y/z and qw/qx/qy/qz columns are retired; the four takes recorded with them
+were migrated when the change landed, and no reader tolerates them.
 
-  Super-slot columns (typeId 0x10–0x17):
-    Named by component sensor — only the fields corresponding to the active
-    deps of that super slot are populated; the rest are blank.
-    Full column list (slot order):
-      gyro_x/y/z, accel_x/y/z, mag_x/y/z, linear_accel_x/y/z,
-      rv_qw/qx/qy/qz, geo_rv_qw/qx/qy/qz,
-      game_rv_qw/qx/qy/qz, arvr_rv_qw/qx/qy/qz
+`type_id` stays, and is now the only thing separating a simple row from a super
+one.  It is not a decoding aid but the row's record of which datagram it was:
+`row_to_packet` rebuilds the packet's type from it, and that name is what
+LiveMonitor counts per-type rates under and what a WebSocket client filters on
+with `?types=`.
+
+Heartbeat packets (typeId 0x20) are telemetry, not sensor data, and are
+deliberately NOT logged — they are absent from PACKET_FIELDS, so write() skips
+them for the same reason it skips a CFG_ACK.
 
 Note: super packets received before the layout is populated (s{i} fallback
 mode) are not stored — a debug warning is emitted by the parser.
@@ -33,35 +40,17 @@ import csv
 import logging
 
 from storage.session_manager import SessionManager, TakeMeta
-from transport.protocol import ALL_SUPER_NAMED_FIELDS
+from transport.protocol import ALL_SUPER_NAMED_FIELDS, PACKET_FIELDS
 
 log = logging.getLogger("csv_logger")
 
-_VEC3_FIELDS = ("x", "y", "z")
-_QUAT_FIELDS = ("qw", "qx", "qy", "qz")
-
+# Every payload column there is, in slot order. A simple slot's fields are a
+# subset of these, so the schema is the super set and nothing else — 32 columns,
+# down from 39 (issue #12 retired the seven anonymous ones).
 CSV_FIELDS = [
     "ts_rx_us", "seq", "ts_esp_us", "type_id",
-    *_VEC3_FIELDS,
-    *_QUAT_FIELDS,
     *ALL_SUPER_NAMED_FIELDS,
 ]
-
-# Payload columns to extract, keyed by typeId
-PAYLOAD_FIELDS: dict[int, tuple[str, ...]] = {
-    0x01: _VEC3_FIELDS,
-    0x02: _VEC3_FIELDS,
-    0x03: _VEC3_FIELDS,
-    0x04: _VEC3_FIELDS,
-    0x05: _QUAT_FIELDS,
-    0x06: _QUAT_FIELDS,
-    0x07: _QUAT_FIELDS,
-    0x08: _QUAT_FIELDS,
-    # 0x20 (heartbeat) intentionally absent — telemetry is not recorded.
-    # All super types share the full named-field set; only populated fields
-    # will have values — the rest are left blank by the write() method.
-    **{0x10 + i: ALL_SUPER_NAMED_FIELDS for i in range(8)},
-}
 
 
 class CSVLogger:
@@ -121,8 +110,8 @@ class CSVLogger:
             return
 
         type_id = packet.get("typeId")
-        if type_id not in PAYLOAD_FIELDS:
-            return   # CFG_ACK, unknown types, etc.
+        if type_id not in PACKET_FIELDS:
+            return   # heartbeat, CFG_ACK, unknown types, etc.
 
         # Skip super packets that arrived before the layout was known
         if 0x10 <= type_id <= 0x17 and packet.get("dep_slots") is None:
@@ -137,7 +126,7 @@ class CSVLogger:
             "ts_esp_us": packet.get("ts_esp_us", ""),
             "type_id":   type_id,
         }
-        for field in PAYLOAD_FIELDS[type_id]:
+        for field in PACKET_FIELDS[type_id]:
             v = packet.get(field)
             row[field] = "" if v is None else v
 
