@@ -34,11 +34,12 @@ import logging
 import os
 from dataclasses import dataclass, asdict
 
+import config
 from storage.paths import confine
 
 log = logging.getLogger("model.params")
 
-PARAMS_DIR      = "params"
+PARAMS_DIR      = config.data_path("params")
 DEFAULT_PROFILE = "default"
 
 
