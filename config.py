@@ -2,6 +2,98 @@
 
 import os
 
+# ── Where the runtime data lives ─────────────────────────────────────────────
+# `sessions/`, `params/` and `mappings/` are what *this machine* recorded, not
+# what a branch says — which is why they are gitignored, and why a git worktree
+# (an agent's, typically) does not contain them.  Resolving the root here rather
+# than assuming it relative to the current working directory is what makes a
+# worktree see the real takes with nothing to install and no link to lay by hand.
+#
+# The link was the previous workaround and it is a trap: `SessionManager.__init__`
+# does `os.makedirs(..., exist_ok=True)`, so *any* import of `core.py` —
+# `python3 -m tests.run` included — recreates an empty `sessions/`, after which
+# `ln -s` quietly builds `sessions/sessions` and one believes the problem solved
+# in front of an empty folder.  Resolution has no such failure mode: the
+# makedirs then lands on the resolved root.
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+# The env override, for deliberately isolating an agent or an experiment.
+DATA_ENV = "CONDUCTOR_DATA"
+
+
+def _main_checkout(repo: str) -> str | None:
+    """
+    The main checkout `repo` is a worktree of, or None if it is not one.
+
+    A worktree's `.git` is a **file**, not a directory, holding one line:
+
+        gitdir: /Users/…/conductor/.git/worktrees/<name>
+
+    so the main checkout is deducible from the worktree alone — what precedes
+    `/.git/worktrees/` — which is the property that makes this need no
+    configuration and hold for every worktree present and future.
+
+    Everything that is shaped like one and is not (a submodule's `.git` file,
+    which points at `.git/modules/<name>`; a bare repository, which has no
+    checkout to speak of; an unreadable or truncated file) answers None, and the
+    caller falls back to today's behaviour.  Detection fails by falling back,
+    never by raising: this runs while `config` is being imported.
+    """
+    dot_git = os.path.join(repo, ".git")
+    try:
+        if not os.path.isfile(dot_git):
+            return None                       # a directory (main checkout), or nothing
+        with open(dot_git) as f:
+            line = f.readline().strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+    if not line.startswith("gitdir:"):
+        return None
+    gitdir = line[len("gitdir:"):].strip()
+    if not gitdir:
+        return None
+    # git 2.48+ can write this relative (`git worktree add --relative-paths`),
+    # and it is relative to the worktree — never to the current directory, which
+    # is the very dependency being removed here.
+    if not os.path.isabs(gitdir):
+        gitdir = os.path.join(repo, gitdir)
+
+    # `realpath`, not `normpath`, and for `confine()`'s own reason: normpath
+    # collapses `..` textually, which walks straight through a symlinked
+    # component and can name a directory that is not the one the path reaches —
+    # here, a `.git/worktrees` sitting beside the wrong parent.  The storage
+    # layer compares realpaths throughout, so the root is one too.
+    parent, sep, _name = os.path.realpath(gitdir).rpartition(os.sep + "worktrees" + os.sep)
+    if not sep or os.path.basename(parent) != ".git":
+        return None
+    main = os.path.dirname(parent)
+    return main if main and os.path.isdir(main) else None
+
+
+def _resolve_data_root(repo: str = _HERE) -> str:
+    """
+    The directory `sessions/`, `params/` and `mappings/` live under.
+
+    Empty in the main checkout — deliberately, so `os.path.join(root, "sessions")`
+    is the bare relative `sessions/` it has always been and nothing about that
+    case changes.
+    """
+    override = os.environ.get(DATA_ENV, "").strip()
+    if override:
+        return os.path.realpath(os.path.expanduser(override))
+    return _main_checkout(repo) or ""
+
+
+DATA_ROOT = _resolve_data_root()
+
+
+def data_path(name: str) -> str:
+    """Where one runtime-data directory lives; relative in the main checkout."""
+    return os.path.join(DATA_ROOT, name)
+
+
 # Network
 UDP_HOST = "0.0.0.0"
 UDP_PORT = 4210          # ESP32 sends sensor data here

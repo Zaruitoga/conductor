@@ -36,11 +36,12 @@ import unicodedata
 from datetime import datetime
 from dataclasses import dataclass, field, fields, asdict
 
+import config
 from storage.paths import UnsafePath, confine, is_video_filename
 
 log = logging.getLogger("session_manager")
 
-SESSIONS_DIR = "sessions"
+SESSIONS_DIR = config.data_path("sessions")
 ACTIVE_FILE  = ".active"
 
 # Session fields editable after creation (PATCH /api/session)

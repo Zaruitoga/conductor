@@ -27,11 +27,12 @@ import os
 import uuid
 from dataclasses import asdict, dataclass, replace
 
+import config
 from storage.paths import confine
 
 log = logging.getLogger("osc.routes")
 
-MAPPINGS_DIR    = "mappings"
+MAPPINGS_DIR    = config.data_path("mappings")
 DEFAULT_PROFILE = "default"
 
 KIND_SIGNAL = "signal"
