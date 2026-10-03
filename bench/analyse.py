@@ -167,7 +167,8 @@ def periodicity(starts_s: list[float]) -> dict:
     }
 
 
-def dominant_period(times_s: np.ndarray, p_min: float = 1.0, p_max: float = 60.0) -> dict:
+def dominant_period(times_s: np.ndarray, span_s: float,
+                    p_min: float = 1.0, p_max: float = 60.0) -> dict:
     """Période qui aligne le mieux des instants, par repliement de phase.
 
     Les intervalles successifs ne suffisent pas : un événement périodique
@@ -177,6 +178,11 @@ def dominant_period(times_s: np.ndarray, p_min: float = 1.0, p_max: float = 60.0
     `R` est la longueur du vecteur moyen des phases (1 = tous en phase, ~1/√n
     au hasard). Les sous-multiples d'une vraie période alignent aussi bien
     qu'elle : on garde la **plus longue** période à 5 % du meilleur R.
+
+    Le `p` de Rayleigh vaut pour *une* période choisie d'avance ; on en a
+    balayé des milliers. `p_corrige` le multiplie par le nombre de périodes
+    réellement distinguables sur la passe, span·(1/p_min − 1/p_max) — sans
+    quoi un bruit trouve toujours sa période « significative ».
     """
     n = times_s.size
     if n < 4:
@@ -198,6 +204,7 @@ def dominant_period(times_s: np.ndarray, p_min: float = 1.0, p_max: float = 60.0
     return {"n": int(n), "periode_s": round(float(best), 2), "R": round(r, 3),
             "multiples": multiples,
             "R_hasard": round(1 / np.sqrt(n), 3), "p_rayleigh": float(np.exp(-n * r * r)),
+            "p_corrige": min(1.0, float(np.exp(-n * r * r)) * span_s * (1 / p_min - 1 / p_max)),
             "phase_s": round(phase, 2)}
 
 
@@ -288,7 +295,7 @@ def analyse(run: dict, seuil_ms: float, fenetre_s: float, join_ms: float,
                     if episodes else {"n": 0},
         "periodicite": periodicity([e["debut_s"] for e in episodes]),
         "periode_des_forts": {"seuil_ms": fort_ms, **dominant_period(np.array(
-            [e["debut_s"] for e in episodes if e["pic_total_ms"] >= fort_ms]))},
+            [e["debut_s"] for e in episodes if e["pic_total_ms"] >= fort_ms]), duration_s)},
         "liste": episodes,
     }
 
@@ -416,7 +423,7 @@ def print_report(r: dict) -> None:
     pf = e["periode_des_forts"]
     if pf.get("periode_s"):
         print(f"  épisodes ≥ {pf['seuil_ms']:g} ms : {pf['n']}, période dominante {pf['periode_s']} s "
-              f"(R {pf['R']} contre ~{pf['R_hasard']} au hasard, p {pf['p_rayleigh']:.1e}, "
+              f"(R {pf['R']} contre ~{pf['R_hasard']} au hasard, p corrigé du balayage {pf['p_corrige']:.1e}, "
               f"phase {pf['phase_s']} s) · à ×2 : R {pf['multiples']['x2']['R']}"
               f" · à ×3 : R {pf['multiples']['x3']['R']}")
     c = r["calages_esp"]

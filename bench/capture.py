@@ -55,10 +55,11 @@ from transport.esp_configurator import EspConfigurator
 FORMAT_VERSION = 1
 RUNS_DIR = config.data_path("bench_runs")
 
-# Charge du spectacle (#63, #80) : GYRO + GAME_RV à 100 Hz, super 0 = [GYRO, GAME_RV]
-# — la configuration de démarrage que `simulator/esp32.py` imite.
-DEFAULT_RATE_HZ = 100.0
-DEFAULT_SIMPLES = "0,6"
+# Charge du spectacle : GYRO + LINEAR_ACCEL + GAME_RV à 50 Hz, super 0 = [GYRO, GAME_RV].
+# Pas les 100 Hz que #63/#80 supposaient : à 100 Hz c'est le BNO lui-même qui ne
+# suit plus, et l'accélération linéaire prend la place (elle servira au modèle).
+DEFAULT_RATE_HZ = 50.0
+DEFAULT_SIMPLES = "0,3,6"
 DEFAULT_SUPER0  = "0,6"
 
 # 4 Mo : la moitié du plafond `kern.ipc.maxsockbuf` de cette machine (8 Mo).
