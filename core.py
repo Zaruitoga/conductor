@@ -274,7 +274,9 @@ async def processing_loop(q: asyncio.Queue) -> None:
       3. Feed the model, which publishes its own frame when the packet produced
          a tick
 
-    Nothing here can drop a packet.  The model contains its own failures at the
+    Nothing here can drop a packet.  (The producer can: UDPReceiver throws a
+    packet away when this queue is full, and counts it in status.udp.dropped —
+    #76.)  The model contains its own failures at the
     node (see model/registry.py), so a broken detector costs its own value and
     never the stream — which used to be false, and is the difference between one
     dead signal and a stuttering visual during a show.
@@ -336,7 +338,8 @@ async def log_stats(interval: float, q: asyncio.Queue, udp_proto, ws: WSServer) 
         w = ws.snapshot()
         log.info(
             f"[{mode}]  Queue:{q.qsize()}  "
-            f"UDP rx:{udp_proto.stats['rx']} err:{udp_proto.stats['errors']}  "
+            f"UDP rx:{udp_proto.stats['rx']} err:{udp_proto.stats['errors']} "
+            f"qdrop:{udp_proto.stats['dropped']}  "
             f"WS tx:{w['tx']} clients:{w['clients']} dropped:{w['dropped']}"
         )
 
@@ -364,6 +367,12 @@ def status_dict() -> dict:
             # Live packets dropped at the socket because a replay owns the
             # pipeline (see accept_live) — grows only during playback.
             "muted":       udp_protocol.stats["muted"]  if udp_protocol else 0,
+            # Packets the receiver threw away because the central queue was
+            # full — host-side loss, which would otherwise read as WiFi loss
+            # (#76). Should stay at zero.
+            "dropped":     udp_protocol.stats["dropped"] if udp_protocol else 0,
+            # Effective SO_RCVBUF, as the kernel reports it (None if unread).
+            "rcvbuf":      udp_protocol.rcvbuf          if udp_protocol else None,
             "last_esp_ip": udp_protocol.last_esp_ip     if udp_protocol else None,
         },
         # Packets dropped for a client that could not keep up (drop-oldest
