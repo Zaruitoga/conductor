@@ -98,6 +98,15 @@ def data_path(name: str) -> str:
 UDP_HOST = "0.0.0.0"
 UDP_PORT = 4210          # ESP32 sends sensor data here
 
+# Kernel receive buffer for the sensor socket (#76). A socket overflow digs the
+# same seq hole as a WiFi loss and nothing in Python can see it, so the buffer
+# is sized rather than left at the default (net.inet.udp.recvspace, 786 896 B on
+# macOS). 4 MiB is ~5x that and well under macOS's hard ceiling (~7.1 MiB for
+# kern.ipc.maxsockbuf = 8 MiB, above which setsockopt fails rather than clamps).
+# The kernel has the last word: the effective value is read back, logged once
+# and exposed as status.udp.rcvbuf. A refusal never stops startup.
+UDP_RCVBUF = 4 * 1024 * 1024
+
 WS_HOST  = "0.0.0.0"
 WS_PORT  = 8081          # downstream clients (Three.js, Ableton…) connect here
 
