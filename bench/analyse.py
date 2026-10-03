@@ -167,9 +167,44 @@ def periodicity(starts_s: list[float]) -> dict:
     }
 
 
+def dominant_period(times_s: np.ndarray, p_min: float = 1.0, p_max: float = 60.0) -> dict:
+    """Période qui aligne le mieux des instants, par repliement de phase.
+
+    Les intervalles successifs ne suffisent pas : un événement périodique
+    entouré de petits épisodes rapproche tous les intervalles de zéro, et la
+    médiane ne voit plus rien (la première passe réelle avait ses grands
+    épisodes à 30 s d'écart, et une médiane des intervalles de 0,6 s).
+    `R` est la longueur du vecteur moyen des phases (1 = tous en phase, ~1/√n
+    au hasard). Les sous-multiples d'une vraie période alignent aussi bien
+    qu'elle : on garde la **plus longue** période à 5 % du meilleur R.
+    """
+    n = times_s.size
+    if n < 4:
+        return {"n": int(n)}
+    periods = np.arange(p_min, p_max, 0.01)
+    ph = 2 * np.pi * times_s[None, :] / periods[:, None]
+    R = np.hypot(np.cos(ph).mean(axis=1), np.sin(ph).mean(axis=1))
+    best = periods[R >= 0.95 * R.max()].max()
+    r = float(R[np.argmin(np.abs(periods - best))])
+    phase = float((np.angle(np.exp(2j * np.pi * times_s / best).mean()) % (2 * np.pi))
+                  / (2 * np.pi) * best)
+    # Les multiples disent si un événement sur deux ou trois domine : un R
+    # presque aussi haut à ×3 qu'à ×1 est un rythme long avec des répliques.
+    multiples = {}
+    for k in (2, 3):
+        ph_k = 2 * np.pi * times_s / (k * best)
+        multiples[f"x{k}"] = {"periode_s": round(float(k * best), 2),
+                              "R": round(float(np.hypot(np.cos(ph_k).mean(), np.sin(ph_k).mean())), 3)}
+    return {"n": int(n), "periode_s": round(float(best), 2), "R": round(r, 3),
+            "multiples": multiples,
+            "R_hasard": round(1 / np.sqrt(n), 3), "p_rayleigh": float(np.exp(-n * r * r)),
+            "phase_s": round(phase, 2)}
+
+
 # ── Analyse ──────────────────────────────────────────────────────────────────
 
-def analyse(run: dict, seuil_ms: float, fenetre_s: float, join_ms: float) -> dict:
+def analyse(run: dict, seuil_ms: float, fenetre_s: float, join_ms: float,
+            fort_ms: float = 150.0) -> dict:
     order = np.argsort(run["t_user"], kind="stable")
     t_user = run["t_user"][order]
     t_kern = run["t_kern"][order]
@@ -252,6 +287,8 @@ def analyse(run: dict, seuil_ms: float, fenetre_s: float, join_ms: float) -> dic
         "duree_ms": dist(np.array([e["duree_ms"] for e in episodes]), unit=1.0)
                     if episodes else {"n": 0},
         "periodicite": periodicity([e["debut_s"] for e in episodes]),
+        "periode_des_forts": {"seuil_ms": fort_ms, **dominant_period(np.array(
+            [e["debut_s"] for e in episodes if e["pic_total_ms"] >= fort_ms]))},
         "liste": episodes,
     }
 
@@ -270,6 +307,8 @@ def analyse(run: dict, seuil_ms: float, fenetre_s: float, join_ms: float) -> dic
     }
 
     report["heartbeat"] = heartbeat_report(run["hb"], run["ts_esp"])
+    report["erreurs_esp_par_intervalle"] = errors_vs_delay(run["hb"], run["ts_esp"][order],
+                                                           delay_user, int(esp[0]))
     report["hote"] = {
         "loadavg_debut": run["header"].get("host", {}).get("loadavg"),
         "loadavg_fin": (run["footer"] or {}).get("loadavg"),
@@ -311,6 +350,37 @@ def heartbeat_report(hb: np.ndarray, ts_esp: np.ndarray) -> dict:
     }
 
 
+def errors_vs_delay(hb: np.ndarray, ts_esp: np.ndarray, delay: np.ndarray,
+                    esp0: int) -> dict:
+    """`udp_errors` n'arrive qu'au heartbeat (2 s) : on le confronte au retard
+    des paquets envoyés dans le même intervalle. Une corrélation forte dit que
+    l'ESP échoue à envoyer *pendant* les épisodes de retard — une même cause en
+    amont de l'hôte, et non une perte dans l'air indépendante du retard."""
+    if hb.shape[0] < 3:
+        return {"n": int(hb.shape[0])}
+    hts = hb[:, 3].astype(np.int64)
+    d_err, d_max, t_end = [], [], []
+    for i in range(hb.shape[0] - 1):
+        span = (int(hts[i + 1]) - int(hts[i])) % (1 << 32)
+        m = ((ts_esp.astype(np.int64) - int(hts[i])) % (1 << 32)) < span
+        if not m.any():
+            continue
+        d_err.append(hb[i + 1, 6] - hb[i, 6])
+        d_max.append(delay[m].max() / 1e3)
+        t_end.append(((int(hts[i + 1]) - esp0) % (1 << 32)) / 1e6)
+    d_err, d_max = np.array(d_err), np.array(d_max)
+    corr = (float(np.corrcoef(d_err, d_max)[0, 1])
+            if d_err.std() > 0 and d_max.std() > 0 else None)
+    hit = np.where(d_err > 0)[0]
+    return {
+        "intervalles": int(d_err.size),
+        "avec_erreurs": int(hit.size),
+        "corr_erreurs_retard_max": None if corr is None else round(corr, 3),
+        "liste": [{"fin_s": round(float(t_end[i]), 1), "erreurs": int(d_err[i]),
+                   "retard_max_ms": round(float(d_max[i]), 1)} for i in hit],
+    }
+
+
 # ── Rapport ──────────────────────────────────────────────────────────────────
 
 def _line(name: str, d: dict | None) -> str:
@@ -343,6 +413,12 @@ def print_report(r: dict) -> None:
         print(f"  périodicité : médiane {p['mediane_s']} s, IQR {p['iqr_s']}, "
               f"{p['frac_a_15pct_de_la_mediane']:.0%} à ±15 % de la médiane, "
               f"{p['frac_multiple_1_2_3']:.0%} à ±15 % d'un multiple ×1–3")
+    pf = e["periode_des_forts"]
+    if pf.get("periode_s"):
+        print(f"  épisodes ≥ {pf['seuil_ms']:g} ms : {pf['n']}, période dominante {pf['periode_s']} s "
+              f"(R {pf['R']} contre ~{pf['R_hasard']} au hasard, p {pf['p_rayleigh']:.1e}, "
+              f"phase {pf['phase_s']} s) · à ×2 : R {pf['multiples']['x2']['R']}"
+              f" · à ×3 : R {pf['multiples']['x3']['R']}")
     c = r["calages_esp"]
     print(f"Calages côté ESP (intervalle d'envoi > nominal + seuil) : {c['n']}"
           + (f" · périodicité médiane {c['periodicite']['mediane_s']} s"
@@ -355,6 +431,11 @@ def print_report(r: dict) -> None:
               f"(firmware avant #82) / {h['ecart_firmware_apres_82']} (après #82)\n"
               f"  RSSI {h['rssi_dbm']['min']}…{h['rssi_dbm']['max']} dBm · "
               f"CPU {h['cpu_temp_c']['debut']:.1f}→{h['cpu_temp_c']['fin']:.1f} °C")
+    ev = r["erreurs_esp_par_intervalle"]
+    if ev.get("intervalles"):
+        print(f"Échecs d'envoi ESP : {ev['avec_erreurs']}/{ev['intervalles']} intervalles de "
+              f"heartbeat touchés · corrélation avec le retard max de l'intervalle : "
+              f"{ev['corr_erreurs_retard_max']}")
     lo = r["hote"]
     print(f"Charge hôte : {lo['loadavg_debut']} → {lo['loadavg_fin']}")
 
@@ -365,6 +446,8 @@ def main() -> int:
     p.add_argument("--seuil-ms", type=float, default=20.0)
     p.add_argument("--fenetre-s", type=float, default=5.0)
     p.add_argument("--join-ms", type=float, default=100.0)
+    p.add_argument("--fort-ms", type=float, default=150.0,
+                   help="seuil des épisodes dont on cherche la période dominante")
     p.add_argument("--episodes", action="store_true", help="imprimer la liste des épisodes")
     args = p.parse_args()
 
@@ -380,7 +463,7 @@ def main() -> int:
     if run["t_user"].size < 100:
         print(f"{path} : {run['t_user'].size} paquets, trop peu pour une distribution.")
         return 1
-    report = analyse(run, args.seuil_ms, args.fenetre_s, args.join_ms)
+    report = analyse(run, args.seuil_ms, args.fenetre_s, args.join_ms, args.fort_ms)
     print_report(report)
     if args.episodes:
         for ep in report["episodes_retard"]["liste"]:
