@@ -313,6 +313,8 @@ def analyse(run: dict, seuil_ms: float, fenetre_s: float, join_ms: float,
         "liste": stall_eps,
     }
 
+    report["forme"] = shape_report(delay_kern if has_kern else delay_user,
+                                   t_kern if has_kern else t_user)
     report["heartbeat"] = heartbeat_report(run["hb"], run["ts_esp"])
     report["erreurs_esp_par_intervalle"] = errors_vs_delay(run["hb"], run["ts_esp"][order],
                                                            delay_user, int(esp[0]))
@@ -354,6 +356,35 @@ def heartbeat_report(hb: np.ndarray, ts_esp: np.ndarray) -> dict:
                      "max": int(hb[:, 7].max())},
         "cpu_temp_c": {"debut": float(a[8]), "fin": float(b[8])},
         "batterie_pct": {"debut": float(a[9]), "fin": float(b[9])},
+    }
+
+
+def shape_report(delay_us: np.ndarray, t_rx_ns: np.ndarray) -> dict:
+    """Ce que l'ancrage sur la médiane cache, par construction.
+
+    La médiane est le bon ancrage tant que le régime normal *est* le plancher :
+    un lien propre délivre la plupart des paquets au retard minimal, et la
+    médiane s'y confond. Quand le lien met *tout* en tampon (une station en
+    économie d'énergie à qui l'AP garde les trames, par exemple), la médiane
+    remonte avec la distribution, et un retard de +70 ms sur chaque paquet se
+    lit « p50 = 0 ». Deux contrôles le rendent visible :
+
+    - les quantiles **au-dessus du plancher** (p0,5, pour ne pas ancrer sur un
+      seul paquet exceptionnel — la mise en garde de la reconnaissance) ;
+    - la **mise en rafales** : la part des paquets arrivés moins de 0,5 ms
+      après le précédent, et l'écart entre rafales. Un flux de ~200 paquets/s
+      arrivant au fil de l'eau en a ~30 % ; livré en paquets, presque tous.
+    """
+    floor = float(np.percentile(delay_us, 0.5))
+    above = (np.percentile(delay_us, [25, 50, 75, 95]) - floor) / 1e3
+    ia_ms = np.diff(np.sort(t_rx_ns)) / 1e6
+    gaps = ia_ms[ia_ms > 5.0]
+    return {
+        "au_dessus_du_plancher_ms": {"p25": round(float(above[0]), 1), "p50": round(float(above[1]), 1),
+                                      "p75": round(float(above[2]), 1), "p95": round(float(above[3]), 1)},
+        "frac_arrivees_en_rafale": round(float(np.mean(ia_ms < 0.5)), 3),
+        "ecart_entre_rafales_ms": {"p50": round(float(np.median(gaps)), 1) if gaps.size else None,
+                                   "p95": round(float(np.percentile(gaps, 95)), 1) if gaps.size else None},
     }
 
 
@@ -405,6 +436,14 @@ def print_report(r: dict) -> None:
     print(_line("total", r["retard_total"]))
     print(_line("à l'arrivée", r["retard_noyau"]))
     print(_line("ajouté hôte", r["retard_hote"]))
+    fo = r["forme"]
+    a = fo["au_dessus_du_plancher_ms"]
+    print(f"  au-dessus du plancher : p25 {a['p25']} · p50 {a['p50']} · p75 {a['p75']} · p95 {a['p95']} ms"
+          f" · en rafale {fo['frac_arrivees_en_rafale']:.0%} · écart entre rafales p50 "
+          f"{fo['ecart_entre_rafales_ms']['p50']} ms")
+    if a["p50"] > 20:
+        print("  ⚠ la médiane est loin du plancher : le lien met tout en tampon, "
+              "et les percentiles ancrés sur la médiane le cachent.")
     print("\nFlux :")
     for name, f in r["flux"].items():
         s = f["seq"]
