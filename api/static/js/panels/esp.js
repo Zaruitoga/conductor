@@ -4,6 +4,11 @@
 // The section is change-gated in the store, but that is not enough on its own:
 // a row the user has edited and not yet applied must survive an unrelated ACK,
 // hence the per-control dirty tracking.
+//
+// There are no ESP presets here on purpose. A localStorage version existed: it
+// could not travel to another machine, so never belonged to a show runbook, and
+// applying one fired up to ten ACK-blocking POSTs that could half-fail. If
+// presets come back they go server-side, like params/ and mappings/.
 
 import {
   $, h, setText, setHidden, setAttr, keyed,

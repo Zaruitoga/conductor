@@ -19,7 +19,7 @@ One branch per ticket, one PR per branch. No commits land directly on `main` for
 
 - **Backend-only changes** — a ticket whose diff touches only `model/`, `api/routes.py`, `transport/`, `osc/`, `storage/`, `core.py`, `config.py`, `main.py`, `simulator/`, `tests/`:
   the implementing agent runs `python3 -m tests.run` locally on the branch and merges the PR via `gh pr merge` only if it's green. No GitHub Actions workflow is involved — this mirrors the project's existing "no build/lint setup" stance (see `CLAUDE.md`).
-- **Any change touching `api/static/` (the frontend panel)** — no auto-merge, ever. `tests/run.py` has zero JS/frontend coverage, so a green backend run proves nothing about a frontend change. The PR opens and waits for the user's own review and merge.
+- **Any change touching a browser surface — `api/static/` (the panel), `api/viz/` (the visualiser), `api/align/` (the alignment page)** — no auto-merge, ever. `tests/run.py` has zero JS/frontend coverage, so a green backend run proves nothing about a frontend change. The PR opens and waits for the user's own review and merge.
 - A ticket that touches both backend and frontend files follows the stricter (frontend) rule.
 
 `main` has no GitHub branch-protection rule turned on — this is discipline enforced by this document, not by repo configuration. Solo, pre-release project: a hard technical gate would add friction (e.g. in a genuine emergency) without a real benefit here.
