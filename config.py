@@ -147,8 +147,10 @@ OSC_RATE_HZ     = 30.0          # default cap on continuous-route sends
 # surface (ADR 0004), because a pose track is precomputed from them and moving
 # either mid-séance would silently invalidate every track already on disk.
 # Swapping wheels means editing here and restarting.
-R_TORE = 1.0             # major radius (metres)
-r_TORE = 0.05            # tube radius (metres)
+# Measured on the wheel in use (2026-10-22): 98 cm from the centre to the tube's
+# axis, 201 cm outer diameter.
+R_TORE = 0.98            # major radius (metres)
+r_TORE = 0.025           # tube radius (metres)
 
 # Pipeline
 DEGENERATE_THRESHOLD = 1e-6   # u_perp below which the wheel is considered flat
